@@ -68,8 +68,12 @@ function Documents() {
 
   // 워커가 Postgres NOTIFY 로 밀어주는 진행률을 그대로 받는다. 폴링은 안전망으로만 남긴다.
   useEffect(() => {
-    const es = new EventSource('/api/rag/events')
+    let es: EventSource | null = null
     let refreshTimer: ReturnType<typeof setTimeout> | null = null
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let attempt = 0
+    let disposed = false
+
     const refreshSoon = () => {
       if (refreshTimer) return
       refreshTimer = setTimeout(() => {
@@ -78,9 +82,7 @@ function Documents() {
       }, 1200)
     }
 
-    es.onopen = () => setLive(true)
-    es.onerror = () => setLive(false)
-    es.onmessage = (e) => {
+    const onMessage = (e: MessageEvent) => {
       let ev: RagEvent
       try {
         ev = JSON.parse(e.data)
@@ -113,11 +115,35 @@ function Documents() {
       })
     }
 
+    const connect = () => {
+      if (disposed) return
+      es = new EventSource('/api/rag/events')
+      es.onopen = () => {
+        attempt = 0
+        setLive(true)
+      }
+      es.onmessage = onMessage
+      es.onerror = () => {
+        setLive(false)
+        // 502 처럼 치명적인 응답을 받으면 브라우저는 재연결을 포기하고 CLOSED 로 둔다
+        // (api 컨테이너 재시작 중에 실제로 발생). 그때는 직접 다시 연다.
+        if (es && es.readyState === EventSource.CLOSED) {
+          es.close()
+          es = null
+          const delay = Math.min(2000 * 2 ** attempt++, 30000)
+          retryTimer = setTimeout(connect, delay)
+        }
+      }
+    }
+    connect()
+
     const poll = setInterval(load, 30000) // SSE 가 끊겨도 화면이 굳지 않게
     return () => {
-      es.close()
+      disposed = true
+      es?.close()
       clearInterval(poll)
       if (refreshTimer) clearTimeout(refreshTimer)
+      if (retryTimer) clearTimeout(retryTimer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q])
@@ -143,9 +169,16 @@ function Documents() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
-        <span className="live" title={live ? '워커와 실시간 연결됨' : '실시간 연결 끊김'}>
-          <span className={`dot ${live ? 'ok' : 'err'}`} />
-          {live ? '실시간' : '연결 끊김'}
+        <span
+          className="live"
+          title={
+            live
+              ? '워커와 실시간으로 연결돼 진행률이 즉시 갱신됩니다'
+              : '실시간 연결이 끊겨 30초마다 갱신합니다. 색인 작업 자체는 계속 진행됩니다'
+          }
+        >
+          <span className={`dot ${live ? 'ok' : 'warn'}`} />
+          {live ? '실시간' : '30초 갱신'}
         </span>
         <button onClick={async () => { const r = await run(() => api.post<any>('/api/rag/scan')); if (r) { toast(`스캔: 신규 ${r.queued}건, 제거 ${r.removed}건`); load() } }}>
           지금 스캔

@@ -581,6 +581,7 @@ tbody tr:hover { background: var(--n-page); }
 .dot { width: 8px; height: 8px; border-radius: var(--r-full); background: #c4c4c4; flex: none; }
 .dot.on { background: var(--primary); }
 .dot.ok { background: #1f9d3d; }
+.dot.warn { background: var(--yellow); }
 .dot.err { background: var(--red); }
 
 .cursor::after { content: '▋'; margin-left: 2px; opacity: .5; }
