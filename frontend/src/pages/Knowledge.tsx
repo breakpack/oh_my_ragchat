@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, fmtTime, type Citation, type DocRow } from '../api'
+import { api, fmtTime, type Citation, type DocRow, type RagEvent } from '../api'
 import { useRun, useToast } from '../ui'
 
 const STATUS: Record<string, { label: string; cls: string }> = {
@@ -36,35 +36,89 @@ export default function Knowledge() {
   )
 }
 
+const PHASES: Record<string, string> = {
+  ocr: 'OCR',
+  embedding: '임베딩',
+  graphing: '그래프',
+}
+
 function Documents() {
   const run = useRun()
   const toast = useToast()
   const [docs, setDocs] = useState<DocRow[]>([])
-  const [byStatus, setByStatus] = useState<Record<string, number>>({})
   const [stats, setStats] = useState<any>(null)
   const [q, setQ] = useState('')
+  const [live, setLive] = useState(false)
 
   const load = useCallback(async () => {
     const r = await run(() =>
-      api.get<{ documents: DocRow[]; by_status: Record<string, number> }>(
+      api.get<{ documents: DocRow[] }>(
         `/api/rag/documents?limit=500${q ? `&q=${encodeURIComponent(q)}` : ''}`,
       ),
     )
-    if (r) {
-      setDocs(r.documents)
-      setByStatus(r.by_status)
-    }
+    if (r) setDocs(r.documents)
     const s = await run(() => api.get<{ stats: any }>('/api/rag/stats'))
     if (s) setStats(s.stats)
   }, [run, q])
 
   useEffect(() => {
     load()
-    const busy = Object.entries(byStatus).some(
-      ([k, v]) => v > 0 && ['pending', 'extracting', 'embedding', 'graphing'].includes(k),
-    )
-    const t = setInterval(load, busy ? 3000 : 15000)
-    return () => clearInterval(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q])
+
+  // 워커가 Postgres NOTIFY 로 밀어주는 진행률을 그대로 받는다. 폴링은 안전망으로만 남긴다.
+  useEffect(() => {
+    const es = new EventSource('/api/rag/events')
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null
+    const refreshSoon = () => {
+      if (refreshTimer) return
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null
+        load()
+      }, 1200)
+    }
+
+    es.onopen = () => setLive(true)
+    es.onerror = () => setLive(false)
+    es.onmessage = (e) => {
+      let ev: RagEvent
+      try {
+        ev = JSON.parse(e.data)
+      } catch {
+        return
+      }
+
+      if (ev.kind === 'scan') {
+        if (ev.queued || ev.removed) refreshSoon()
+        return
+      }
+      if (ev.status === 'deleted' || ev.kind === 'document') refreshSoon()
+
+      setDocs((prev) => {
+        const i = prev.findIndex(
+          (d) => (ev.document_id && d.id === ev.document_id) || d.path === ev.path,
+        )
+        if (i === -1) return prev
+        const next = [...prev]
+        next[i] = {
+          ...next[i],
+          status: ev.status ?? next[i].status,
+          progress_done: ev.done ?? 0,
+          progress_total: ev.total ?? 0,
+          phase: ev.phase ?? next[i].phase,
+          error: ev.error ?? (ev.status === 'error' ? next[i].error : null),
+          chunk_count: ev.chunk_count ?? next[i].chunk_count,
+        }
+        return next
+      })
+    }
+
+    const poll = setInterval(load, 30000) // SSE 가 끊겨도 화면이 굳지 않게
+    return () => {
+      es.close()
+      clearInterval(poll)
+      if (refreshTimer) clearTimeout(refreshTimer)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q])
 
@@ -89,6 +143,10 @@ function Documents() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
+        <span className="live" title={live ? '워커와 실시간 연결됨' : '실시간 연결 끊김'}>
+          <span className={`dot ${live ? 'ok' : 'err'}`} />
+          {live ? '실시간' : '연결 끊김'}
+        </span>
         <button onClick={async () => { const r = await run(() => api.post<any>('/api/rag/scan')); if (r) { toast(`스캔: 신규 ${r.queued}건, 제거 ${r.removed}건`); load() } }}>
           지금 스캔
         </button>
@@ -102,7 +160,7 @@ function Documents() {
           <thead>
             <tr>
               <th>경로</th>
-              <th style={{ width: 110 }}>상태</th>
+              <th style={{ width: 150 }}>상태</th>
               <th style={{ width: 70 }}>청크</th>
               <th style={{ width: 80 }}>엔티티</th>
               <th style={{ width: 150 }}>색인 시각</th>
@@ -114,11 +172,27 @@ function Documents() {
               const st = STATUS[d.status] || { label: d.status, cls: '' }
               return (
                 <tr key={d.id}>
-                  <td className="mono truncate" style={{ maxWidth: 380 }} title={d.error || d.path}>
-                    {d.path}
+                  <td className="truncate" style={{ maxWidth: 380 }} title={d.error || d.path}>
+                    <span className="mono">{d.path}</span>
+                    {d.ocr && <span className="badge" style={{ marginLeft: 6 }}>OCR</span>}
                     {d.error && <div className="mute2" style={{ color: 'var(--err)' }}>{d.error}</div>}
                   </td>
-                  <td><span className={`badge ${st.cls}`}>{st.label}</span></td>
+                  <td>
+                    <span className={`badge ${st.cls}`}>{st.label}</span>
+                    {d.progress_total > 0 && (
+                      <div style={{ marginTop: 6 }}>
+                        <div className="bar-track">
+                          <div
+                            className="bar-fill"
+                            style={{ width: `${Math.round((d.progress_done / d.progress_total) * 100)}%` }}
+                          />
+                        </div>
+                        <div className="mute2" style={{ marginTop: 2 }}>
+                          {PHASES[d.phase || ''] || ''} {d.progress_done}/{d.progress_total}
+                        </div>
+                      </div>
+                    )}
+                  </td>
                   <td className="mute2">{d.chunk_count}</td>
                   <td className="mute2">{d.entity_count}</td>
                   <td className="mute2">{fmtTime(d.indexed_at)}</td>

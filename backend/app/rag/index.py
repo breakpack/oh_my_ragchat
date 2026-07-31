@@ -1,6 +1,7 @@
 """문서 인덱싱 파이프라인 (워커에서 sync 로 실행).
 
 status 흐름: pending → extracting → embedding → graphing → ready | error | skipped
+각 단계 전환과 진행률은 events.publish() 로 흘려보내 UI 가 실시간으로 받는다.
 """
 
 from __future__ import annotations
@@ -12,8 +13,8 @@ from pathlib import Path
 
 import httpx
 
-from .. import db, flags, jobs, ollama, paths, security
-from ..config import INDEXABLE_EXTS, env
+from .. import db, events, flags, jobs, ollama, paths, security
+from ..config import IMAGE_EXTS, INDEXABLE_EXTS, env
 from . import chunk as chunker
 from . import extract as extractor
 from . import graph
@@ -31,7 +32,10 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _set_status(doc_id: int, status: str, **extra) -> None:
+# ─────────────────────────── 상태 / 진행률 ───────────────────────────
+
+
+def _set_status(doc_id: int, path: str, status: str, **extra) -> None:
     with db.cursor() as cur:
         cur.execute(
             """
@@ -39,11 +43,33 @@ def _set_status(doc_id: int, status: str, **extra) -> None:
                SET status = %s,
                    error = %s,
                    chunk_count = COALESCE(%s, chunk_count),
+                   phase = %s,
+                   progress_done = 0,
+                   progress_total = COALESCE(%s, 0),
                    indexed_at = CASE WHEN %s = 'ready' THEN now() ELSE indexed_at END
              WHERE id = %s
             """,
-            (status, extra.get("error"), extra.get("chunk_count"), status, doc_id),
+            (status, extra.get("error"), extra.get("chunk_count"), status,
+             extra.get("total"), status, doc_id),
         )
+    events.publish("document", {
+        "document_id": doc_id, "path": path, "status": status,
+        "done": 0, "total": extra.get("total") or 0,
+        "error": extra.get("error"), "chunk_count": extra.get("chunk_count"),
+    })
+
+
+def _progress(doc_id: int, path: str, status: str, done: int, total: int, phase: str) -> None:
+    with db.cursor() as cur:
+        cur.execute(
+            "UPDATE documents SET progress_done = %s, progress_total = %s, phase = %s "
+            "WHERE id = %s",
+            (done, total, phase, doc_id),
+        )
+    events.publish("progress", {
+        "document_id": doc_id, "path": path, "status": status,
+        "done": done, "total": total, "phase": phase,
+    })
 
 
 def _upsert_document(rel: str, st: os.stat_result, digest: str) -> dict:
@@ -63,8 +89,11 @@ def _upsert_document(rel: str, st: os.stat_result, digest: str) -> dict:
 
 def excluded(rel: str, cfg: dict) -> str | None:
     """인덱싱에서 빼야 할 이유. 없으면 None."""
-    if Path(rel).suffix.lower() not in INDEXABLE_EXTS:
+    ext = Path(rel).suffix.lower()
+    if ext not in INDEXABLE_EXTS:
         return "지원하지 않는 확장자"
+    if ext in IMAGE_EXTS and not cfg.get("rag_ocr_enabled"):
+        return "이미지 OCR 이 꺼져 있음"
     if flags.is_hidden_inherited(rel):
         return "숨김 처리된 경로"
     if not cfg["rag_index_locked_files"] and security.is_locked(rel):
@@ -106,33 +135,43 @@ def index_document(rel: str, cfg: dict, *, force: bool = False,
     owned = client is None
     client = client or httpx.Client(timeout=600)
     try:
-        _set_status(doc_id, "extracting")
+        _set_status(doc_id, rel, "extracting")
         try:
-            text = extractor.extract(abs_path)
+            result = extractor.extract(
+                abs_path, cfg,
+                on_progress=lambda d, t, ph: _progress(doc_id, rel, "extracting", d, t, ph),
+            )
         except extractor.Unsupported as exc:
-            _set_status(doc_id, "skipped", error=str(exc))
+            _set_status(doc_id, rel, "skipped", error=str(exc))
             return "skipped"
+        except extractor.OcrUnavailable as exc:
+            _set_status(doc_id, rel, "error", error=str(exc))
+            return "error"
+
+        with db.cursor() as cur:
+            cur.execute("UPDATE documents SET ocr = %s WHERE id = %s", (result.ocr, doc_id))
 
         pieces = chunker.split(
-            text, int(cfg["rag_chunk_size"]), int(cfg["rag_chunk_overlap"])
+            result.text, int(cfg["rag_chunk_size"]), int(cfg["rag_chunk_overlap"])
         )
         if not pieces:
-            _set_status(doc_id, "skipped", error="추출된 텍스트가 없습니다", chunk_count=0)
+            msg = "OCR 로도 글자를 찾지 못했습니다" if result.ocr else "추출된 텍스트가 없습니다"
+            _set_status(doc_id, rel, "skipped", error=msg, chunk_count=0)
             return "skipped"
 
-        _set_status(doc_id, "embedding", chunk_count=len(pieces))
-        _replace_chunks(doc_id, pieces, cfg, client)
+        _set_status(doc_id, rel, "embedding", chunk_count=len(pieces), total=len(pieces))
+        _replace_chunks(doc_id, rel, pieces, cfg, client)
 
         if cfg["rag_extract_graph"]:
-            _set_status(doc_id, "graphing")
-            _build_graph(doc_id, cfg, client)
+            _set_status(doc_id, rel, "graphing", total=len(pieces))
+            _build_graph(doc_id, rel, cfg, client)
 
-        _set_status(doc_id, "ready", chunk_count=len(pieces))
-        log.info("인덱싱 완료 %s (청크 %d)", rel, len(pieces))
+        _set_status(doc_id, rel, "ready", chunk_count=len(pieces))
+        log.info("인덱싱 완료 %s (청크 %d%s)", rel, len(pieces), ", OCR" if result.ocr else "")
         return "ready"
     except Exception as exc:  # noqa: BLE001 - 실패는 문서 행에 기록하고 큐는 계속 돈다
         log.exception("인덱싱 실패 %s", rel)
-        _set_status(doc_id, "error", error=f"{type(exc).__name__}: {exc}")
+        _set_status(doc_id, rel, "error", error=f"{type(exc).__name__}: {exc}")
         return "error"
     finally:
         if owned:
@@ -152,9 +191,11 @@ def _mark_skipped(rel: str, st: os.stat_result, reason: str) -> None:
             """,
             (rel, st.st_mtime, st.st_size, reason),
         )
+    events.publish("document", {"path": rel, "status": "skipped", "error": reason})
 
 
-def _replace_chunks(doc_id: int, pieces: list[str], cfg: dict, client: httpx.Client) -> None:
+def _replace_chunks(doc_id: int, rel: str, pieces: list[str], cfg: dict,
+                    client: httpx.Client) -> None:
     embed_model = str(cfg["embed_model"])
     with db.cursor() as cur:
         cur.execute("DELETE FROM chunks WHERE document_id = %s", (doc_id,))
@@ -177,9 +218,11 @@ def _replace_chunks(doc_id: int, pieces: list[str], cfg: dict, client: httpx.Cli
                     """,
                     (doc_id, start + i, content, chunker.token_est(content), vec),
                 )
+        _progress(doc_id, rel, "embedding",
+                  min(start + EMBED_BATCH, len(pieces)), len(pieces), "embedding")
 
 
-def _build_graph(doc_id: int, cfg: dict, client: httpx.Client) -> None:
+def _build_graph(doc_id: int, rel: str, cfg: dict, client: httpx.Client) -> None:
     model = str(cfg["extract_model"])
     num_ctx = int(cfg["num_ctx"])
     embed_model = str(cfg["embed_model"])
@@ -190,24 +233,25 @@ def _build_graph(doc_id: int, cfg: dict, client: httpx.Client) -> None:
         )
         rows = cur.fetchall()
 
-    for row in rows:
+    for n, row in enumerate(rows, 1):
         try:
             entities, relations = graph.extract_graph(
                 row["content"], model, num_ctx=num_ctx, client=client
             )
         except ollama.OllamaError as exc:
             log.warning("엔티티 추출 실패 (청크 %s): %s", row["id"], exc)
+            _progress(doc_id, rel, "graphing", n, len(rows), "graphing")
             continue
-        if not entities:
-            continue
+        if entities:
+            texts = [f"{e['name']}: {e['description']}".strip(": ") for e in entities]
+            vectors = ollama.embed_sync(texts, embed_model, client=client)
+            embeddings = {e["name_norm"]: v for e, v in zip(entities, vectors)}
 
-        texts = [f"{e['name']}: {e['description']}".strip(": ") for e in entities]
-        vectors = ollama.embed_sync(texts, embed_model, client=client)
-        embeddings = {e["name_norm"]: v for e, v in zip(entities, vectors)}
+            ids = graph.merge_entities(entities, embeddings)
+            graph.merge_relations(relations, ids)
+            graph.link_chunk(row["id"], list(ids.values()))
 
-        ids = graph.merge_entities(entities, embeddings)
-        graph.merge_relations(relations, ids)
-        graph.link_chunk(row["id"], list(ids.values()))
+        _progress(doc_id, rel, "graphing", n, len(rows), "graphing")
 
     graph.refresh_degrees()
 
@@ -224,6 +268,7 @@ def delete_document(rel: str) -> int:
     if n:
         graph.prune_orphans()
         graph.refresh_degrees()
+        events.publish("document", {"path": rel, "status": "deleted"})
     return n
 
 
@@ -237,6 +282,7 @@ def scan(cfg: dict, *, force: bool = False) -> dict:
     watch = [paths.normalize(w) for w in (cfg["rag_watch_dirs"] or [])]
     hidden = flags.hidden_paths()
     locked = set(flags.locked_paths()) if not cfg["rag_index_locked_files"] else set()
+    exts = INDEXABLE_EXTS if cfg.get("rag_ocr_enabled") else INDEXABLE_EXTS - IMAGE_EXTS
 
     on_disk: dict[str, tuple[float, int]] = {}
     for wdir in watch:
@@ -252,7 +298,7 @@ def scan(cfg: dict, *, force: bool = False) -> dict:
                 if not any(paths.is_under(f"{rel_dir}/{d}".lstrip("/"), h) for h in hidden)
             ]
             for name in filenames:
-                if Path(name).suffix.lower() not in INDEXABLE_EXTS:
+                if Path(name).suffix.lower() not in exts:
                     continue
                 rel = f"{rel_dir}/{name}".lstrip("/")
                 if rel in locked or any(paths.is_under(rel, h) for h in hidden):
@@ -284,4 +330,6 @@ def scan(cfg: dict, *, force: bool = False) -> dict:
         if jobs.enqueue_delete(rel) is not None:
             removed += 1
 
+    if queued or removed:
+        events.publish("scan", {"queued": queued, "removed": removed})
     return {"seen": len(on_disk), "queued": queued, "removed": removed}

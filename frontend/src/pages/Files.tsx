@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, fmtSize, fmtTime, type FileItem } from '../api'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { api, fmtSize, fmtTime, type FileItem, type Preview } from '../api'
 import { Field, Modal, Toggle, useRun, useToast } from '../ui'
+
+const contentUrl = (path: string, download = false) =>
+  `/api/files/content?path=${encodeURIComponent(path)}${download ? '&download=1' : ''}`
 
 interface Listing {
   path: string
@@ -16,7 +21,7 @@ type Dialog =
   | { kind: 'rename'; item: FileItem }
   | { kind: 'move'; item: FileItem }
   | { kind: 'lock'; item: FileItem }
-  | { kind: 'unlock'; item: FileItem; then: 'open' | 'download' }
+  | { kind: 'unlock'; item: FileItem; then: 'preview' | 'download' }
   | null
 
 const ICONS: Record<string, string> = {
@@ -37,6 +42,8 @@ export default function Files() {
   const [over, setOver] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [trashOpen, setTrashOpen] = useState(false)
+  const [preview, setPreview] = useState<Preview | null>(null)
+  const [previewBusy, setPreviewBusy] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(
@@ -80,16 +87,24 @@ export default function Files() {
     load()
   }
 
+  const loadPreview = useCallback(
+    async (path: string) => {
+      setPreviewBusy(true)
+      const r = await run(() => api.get<Preview>(`/api/files/preview?path=${encodeURIComponent(path)}`))
+      setPreviewBusy(false)
+      if (r) setPreview(r)
+    },
+    [run],
+  )
+
   const openFile = (item: FileItem, download = false) => {
     if (item.locked) {
       setPassword('')
-      setDialog({ kind: 'unlock', item, then: download ? 'download' : 'open' })
+      setDialog({ kind: 'unlock', item, then: download ? 'download' : 'preview' })
       return
     }
-    window.open(
-      `/api/files/content?path=${encodeURIComponent(item.path)}${download ? '&download=1' : ''}`,
-      '_blank',
-    )
+    if (download) window.open(contentUrl(item.path, true), '_blank')
+    else loadPreview(item.path)
   }
 
   const submitDialog = async () => {
@@ -112,12 +127,8 @@ export default function Files() {
     } else if (dialog.kind === 'unlock') {
       const ok = await run(() => api.post('/api/files/unlock', { path: dialog.item.path, password }))
       if (!ok) return
-      window.open(
-        `/api/files/content?path=${encodeURIComponent(dialog.item.path)}${
-          dialog.then === 'download' ? '&download=1' : ''
-        }`,
-        '_blank',
-      )
+      if (dialog.then === 'download') window.open(contentUrl(dialog.item.path, true), '_blank')
+      else loadPreview(dialog.item.path)
     }
     setDialog(null)
     setText('')
@@ -273,8 +284,83 @@ export default function Files() {
         </Modal>
       )}
 
+      {(preview || previewBusy) && (
+        <PreviewPanel data={preview} busy={previewBusy} onClose={() => setPreview(null)} />
+      )}
+
       {trashOpen && <Trash onClose={() => { setTrashOpen(false); load() }} />}
     </div>
+  )
+}
+
+function PreviewPanel({
+  data,
+  busy,
+  onClose,
+}: {
+  data: Preview | null
+  busy: boolean
+  onClose: () => void
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <aside className="preview" aria-label="파일 미리보기">
+      <header>
+        <div className="grow truncate">
+          <div className="title truncate">{data?.name ?? '불러오는 중…'}</div>
+          {data && <div className="mute2">{fmtSize(data.size)} · {data.mime}</div>}
+        </div>
+        {data && (
+          <a className="badge" href={contentUrl(data.path, true)} target="_blank" rel="noreferrer">
+            다운로드
+          </a>
+        )}
+        <button className="ghost sm" aria-label="미리보기 닫기" onClick={onClose}>닫기</button>
+      </header>
+
+      <div className="body">
+        {busy && <div className="empty">불러오는 중…</div>}
+
+        {data?.kind === 'image' && (
+          <img src={contentUrl(data.path)} alt={data.name} />
+        )}
+
+        {data?.kind === 'pdf' && (
+          <iframe src={contentUrl(data.path)} title={data.name} />
+        )}
+
+        {data?.kind === 'markdown' && (
+          <div className="md">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{data.text || ''}</ReactMarkdown>
+          </div>
+        )}
+
+        {data?.kind === 'text' && <pre className="mono">{data.text}</pre>}
+
+        {data?.kind === 'none' && !busy && (
+          <div className="empty">
+            이 형식은 인라인 미리보기를 지원하지 않습니다.
+            {data.error && <div className="mute2" style={{ marginTop: 8 }}>{data.error}</div>}
+            <div style={{ marginTop: 12 }}>
+              <a className="badge" href={contentUrl(data.path, true)} target="_blank" rel="noreferrer">
+                다운로드
+              </a>
+            </div>
+          </div>
+        )}
+
+        {data?.truncated && (
+          <div className="mute2" style={{ padding: 12 }}>
+            길어서 앞부분만 표시했습니다. 전체는 다운로드해서 확인하세요.
+          </div>
+        )}
+      </div>
+    </aside>
   )
 }
 

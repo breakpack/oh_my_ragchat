@@ -54,6 +54,7 @@ pgdata (named volume)    → 컨테이너 /var/lib/postgresql/data
 ## 4. 데이터 모델 (`db/init/001_schema.sql`)
 
 ```
+schema_migrations(name, applied_at)            -- db/migrations/*.sql 적용 이력
 app_settings(key, value jsonb)                 -- 단일 사용자 설정 KV
 auth_user(id=1, password_hash, salt)           -- 단일 계정
 path_flags(path, hidden bool, lock_hash, lock_salt, note)
@@ -75,6 +76,11 @@ jobs(id, kind, payload jsonb, status, attempts, error, created_at, started_at, d
   이웃 확장은 재귀 CTE (`depth <= 2`) 로 처리한다. 단일 사용자 규모에서 충분하고
   pgvector 와 한 이미지에서 공존시킬 수 있다.
 - `jobs` 는 `FOR UPDATE SKIP LOCKED` 로 소비하는 DB 큐. Redis/Celery 불필요.
+- **스키마 변경**: `001_schema.sql` 은 새 볼륨에서만 도는 initdb 베이스라인이다. 이미 데이터가
+  있는 설치본에도 반영하려면 `db/migrations/*.sql` 에 **멱등하게** 쓴다(`ADD COLUMN IF NOT
+  EXISTS` 등). api 가 기동할 때 `app/migrate.py` 가 미적용분만 순서대로 실행한다.
+- `chunks.content` 에 GIN trigram 인덱스(전문검색), `documents` 에 `ocr` /
+  `progress_done` / `progress_total` / `phase`, `chat_messages` 에 `attachments jsonb`.
 
 ## 5. Graph RAG 파이프라인 (LightRAG 방식)
 
@@ -87,6 +93,11 @@ jobs(id, kind, payload jsonb, status, attempts, error, created_at, started_at, d
    기다리지 않고 즉시 잡을 건다.
 2. **추출** — 확장자별 텍스트 추출: `.txt .md`(평문, charset 자동감지), `.pdf`(pypdf),
    `.docx`(python-docx). 그 외는 skip 상태로 기록.
+   - **OCR**: PDF 는 텍스트 레이어가 `rag_ocr_min_chars`(기본 80자) 미만이면 스캔본으로 보고
+     pypdfium2 로 페이지를 렌더링해 tesseract 에 넘긴다. 이미지 파일(`.png .jpg` …)은 바로 OCR.
+     tesseract 기본 PSM 3 은 여백이 많은 페이지를 "Empty page" 로 버리는 일이 잦아
+     **6(단일 블록) → 4(다단) → 11(성긴 텍스트)** 순으로 재시도하고, 짧은 변이 1400px 미만이면
+     확대한 뒤 grayscale+autocontrast 를 건다. `documents.ocr` 에 사용 여부를 남긴다.
 3. **청킹** — 문단 경계 우선, 목표 1200자 / 오버랩 150자.
 4. **임베딩** — Ollama `/api/embed`, 모델 `bge-m3` (1024차원, 한국어 강함). 배치 16.
 5. **엔티티/관계 추출** — 청크마다 로컬 LLM 1회 호출. 구조화 출력(JSON)으로
@@ -108,7 +119,12 @@ jobs(id, kind, payload jsonb, status, attempts, error, created_at, started_at, d
 | `naive` | 질문 임베딩 → `chunks` 코사인 top-k. 가장 빠름 |
 | `local` | 질문 임베딩 → `entities` top-k → 그 엔티티의 이웃(1~2홉) + 연결 청크 |
 | `global` | 질문 키워드 → `relations` 매칭 → 양끝 엔티티 + 연결 청크 |
-| `hybrid` | local ∪ global ∪ naive 를 dedupe 후 랭킹 (기본값) |
+| `hybrid` | local ∪ global ∪ naive ∪ **키워드** 를 dedupe 후 랭킹 (기본값) |
+
+**키워드(전문검색) 브랜치** — 임베딩은 고유명사·모델명·숫자처럼 "정확히 그 글자"를 찾는
+질문에 약하다. `chunks.content` 의 GIN trigram 인덱스로 `ILIKE '%term%'` 매칭을 병행하고,
+점수는 `벡터 유사도 + 적중 키워드 수 × 0.05` 로 매겨 벡터 랭킹을 크게 흔들지 않게 한다.
+`rag_use_keyword` 로 끌 수 있으며 hybrid 모드에서만 동작한다(naive 는 순수 벡터로 유지).
 
 컨텍스트는 `-----Entities-----` / `-----Relations-----` / `-----Sources-----`
 세 블록의 CSV 유사 형태로 조립하고, 각 소스에 `[S1]` 형태 인용 태그를 붙여
@@ -125,6 +141,25 @@ jobs(id, kind, payload jsonb, status, attempts, error, created_at, started_at, d
 - 페르소나: `system_prompt` + 모델 + temperature 묶음. 세션 생성 시 선택.
 - 프롬프트 우선순위: 페르소나 system prompt → RAG 컨텍스트 지시문 → 대화 히스토리.
 - 히스토리는 최근 N 턴(설정값, 기본 12턴)만 전송.
+- **첨부**: NAS 경로 또는 브라우저 업로드(base64) 둘 다 받는다. 이미지는 Ollama 메시지의
+  `images` 필드로, 그 외는 추출한 본문을 프롬프트에 인라인한다.
+  이미지는 **OCR 결과도 함께** 넘긴다 — `vision` 능력을 광고하면서 실제로는 이미지를
+  처리하지 못하는 모델이 있어서다(`qwen3.6:27b-mlx` 에서 확인). `chat_attach_ocr_images` 로 끈다.
+
+### 인덱싱 진행률 실시간화
+
+worker 와 api 는 별도 컨테이너라 메모리를 공유할 수 없다. 브로커를 추가하는 대신
+이미 있는 Postgres 의 **LISTEN/NOTIFY** 를 쓴다.
+
+```
+worker ──pg_notify('chatchat_events', json)──→ db
+                                                │ LISTEN (전용 async 커넥션)
+api  ←───────────────────────────────────────────┘
+  └── GET /api/rag/events (SSE) ──→ 브라우저 EventSource
+```
+
+이벤트는 `document`(상태 전환) / `progress`(단계별 done·total) / `scan`(신규·삭제 수).
+페이로드 8000바이트 제한이 있어 요약 정보만 담고, 프론트는 30초 폴링을 안전망으로 함께 둔다.
 
 ## 7. 보안 모델 (단일 사용자)
 
@@ -154,6 +189,7 @@ POST   /api/files/rename
 POST   /api/files/move
 DELETE /api/files                      휴지통으로 이동
 GET    /api/files/content?path=        다운로드/미리보기 (잠긴 파일은 비번 헤더 필요)
+GET    /api/files/preview?path=        인라인 미리보기 메타(+텍스트 계열은 본문까지)
 POST   /api/files/unlock               파일 비밀번호 확인
 PUT    /api/files/flags                숨김 토글 / 잠금 설정·해제
 
@@ -168,6 +204,8 @@ POST   /api/rag/reindex                전체/개별 재인덱싱
 DELETE /api/rag/documents/{id}
 GET    /api/rag/search?q=              검색 결과 프리뷰 (디버깅용)
 GET    /api/rag/graph?entity=          그래프 이웃 조회
+GET    /api/rag/events                 인덱싱 진행률 SSE (EventSource)
+POST   /api/rag/scan                   주기 스캔을 기다리지 않고 즉시 대조
 
 GET/PUT /api/settings                  설정 전체 조회/부분 저장
 GET    /api/settings/models            Ollama 모델 목록 프록시
@@ -177,9 +215,11 @@ GET    /api/health                     db / ollama 헬스체크
 ## 9. 설정 페이지 항목
 
 - 연결: Ollama base URL, 헬스 상태, 모델 목록
-- 모델: 채팅 모델, 추출 모델, 임베딩 모델, temperature, num_ctx, 히스토리 턴 수
-- RAG: 감시 폴더 목록, 청크 크기/오버랩, top-k, 기본 검색 모드, 기본 RAG 토글,
-  잠긴 파일 인덱싱 여부, 전체 재인덱싱 버튼
+- 모델: 채팅 모델, 추출 모델, 임베딩 모델, temperature, num_ctx, 히스토리 턴 수,
+  첨부 최대 크기, 이미지 첨부 OCR 병행 여부
+- RAG: 감시 폴더 목록, 청크 크기/오버랩, top-k(청크·엔티티·관계·키워드), 기본 검색 모드,
+  기본 RAG 토글, 잠긴 파일 인덱싱 여부, 키워드 검색 병행, OCR(사용 여부·언어·스캔본 판정 기준),
+  전체 재인덱싱 버튼
 - NAS: 업로드 최대 크기, 휴지통 사용 여부, 미리보기 허용 확장자
 - 보안: 비밀번호 변경, 세션 만료일, 숨김 항목 표시 기본값
 - 페르소나 관리
@@ -217,8 +257,10 @@ DESIGN.md 의 제약을 따른 결정 두 가지:
 - ~~**P0 (스캐폴딩)** — compose 부팅, 스키마, 인증, 파일 매니저, Ollama 채팅 SSE, 설정 골격~~ ✅
 - ~~**P1 (RAG)** — 추출·청킹·임베딩·엔티티 추출 워커, hybrid 검색, 인용 UI~~ ✅
 - ~~**P2 (다듬기)** — 숨김/잠금 UX, 그래프 뷰어, 휴지통, 작업 큐 모니터~~ ✅
-- **P3 (선택)** — WebDAV 마운트, 전문검색(pg_trgm), 이미지 OCR, 멀티모달 첨부,
-  문서 인라인 미리보기, 인덱싱 진행률 SSE 실시간화
+- ~~**P3** — 전문검색(pg_trgm), 이미지·스캔 PDF OCR, 채팅 첨부,
+  문서 인라인 미리보기, 인덱싱 진행률 SSE 실시간화~~ ✅
+- **P4 (선택)** — WebDAV 마운트, 표/레이아웃 보존 PDF 파싱, 첨부에서 NAS 파일 직접 고르기,
+  검색 결과 하이라이트
 
 ## 11. 개발 명령
 

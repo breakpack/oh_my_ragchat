@@ -192,6 +192,20 @@ export default function Settings() {
             <Field label="히스토리 턴 수" hint="모델에 보내는 최근 대화">
               <input type="number" value={val('history_turns')} onChange={(e) => set('history_turns', Number(e.target.value))} />
             </Field>
+            <Field label="첨부 최대 크기 (MB)" hint="채팅에 붙이는 이미지·문서">
+              <input type="number" value={val('chat_attach_max_mb')} onChange={(e) => set('chat_attach_max_mb', Number(e.target.value))} />
+            </Field>
+          </div>
+
+          <Toggle
+            checked={!!val('chat_attach_ocr_images')}
+            onChange={(v) => set('chat_attach_ocr_images', v)}
+          >
+            이미지 첨부를 OCR 해서 글자도 함께 전달
+          </Toggle>
+          <div className="mute2" style={{ marginTop: 8 }}>
+            vision 능력을 광고하지만 실제로는 이미지를 처리하지 못하는 모델이 있습니다
+            (일부 MLX 빌드). 켜두면 그런 모델에서도 이미지 속 텍스트를 읽을 수 있습니다.
           </div>
 
           <Toggle checked={!!val('show_thinking')} onChange={(v) => set('show_thinking', v)}>
@@ -250,8 +264,18 @@ export default function Settings() {
               <Field label="엔티티 top-k"><input type="number" value={val('rag_top_k_entities')} onChange={(e) => set('rag_top_k_entities', Number(e.target.value))} /></Field>
               <Field label="관계 top-k"><input type="number" value={val('rag_top_k_relations')} onChange={(e) => set('rag_top_k_relations', Number(e.target.value))} /></Field>
               <Field label="그래프 탐색 깊이" hint="0~2"><input type="number" value={val('rag_graph_depth')} onChange={(e) => set('rag_graph_depth', Number(e.target.value))} /></Field>
+              <Field label="키워드 top-k"><input type="number" value={val('rag_top_k_keyword')} onChange={(e) => set('rag_top_k_keyword', Number(e.target.value))} /></Field>
+            </div>
+            <Toggle checked={!!val('rag_use_keyword')} onChange={(v) => set('rag_use_keyword', v)}>
+              본문 키워드 검색 병행 (하이브리드 모드)
+            </Toggle>
+            <div className="mute2" style={{ marginTop: 8 }}>
+              임베딩은 고유명사·모델명·숫자처럼 "정확히 그 글자"를 찾는 질문에 약합니다.
+              pg_trgm 으로 본문을 직접 매칭해 벡터 검색과 합칩니다.
             </div>
           </div>
+
+          <OcrCard val={val} set={set} />
 
           <div className="card row">
             <div className="grow mute2">설정을 바꾼 뒤에는 다시 색인해야 반영됩니다.</div>
@@ -344,6 +368,54 @@ function ListEditor({
         </button>
       </div>
     </>
+  )
+}
+
+function OcrCard({ val, set }: { val: (k: string) => any; set: (k: string, v: any) => void }) {
+  const [ocr, setOcr] = useState<{ available: boolean; langs: string[] } | null>(null)
+
+  useEffect(() => {
+    api.get<{ available: boolean; langs: string[] }>('/api/settings/ocr').then(setOcr).catch(() => setOcr(null))
+  }, [])
+
+  return (
+    <div className="card">
+      <h3>
+        OCR
+        <span className="mute2">이미지 · 스캔 PDF</span>
+        {ocr && (
+          <span className={`badge ${ocr.available ? 'ok' : 'err'}`}>
+            {ocr.available ? `tesseract 사용 가능 (${ocr.langs.join(', ')})` : 'tesseract 없음'}
+          </span>
+        )}
+      </h3>
+
+      <Toggle checked={!!val('rag_ocr_enabled')} onChange={(v) => set('rag_ocr_enabled', v)}>
+        OCR 사용
+      </Toggle>
+
+      <div className="grid2" style={{ marginTop: 12 }}>
+        <Field label="언어" hint="tesseract 코드. 여러 개는 + 로 연결">
+          <input
+            value={val('rag_ocr_langs') ?? ''}
+            placeholder="kor+eng"
+            onChange={(e) => set('rag_ocr_langs', e.target.value)}
+          />
+        </Field>
+        <Field label="스캔본 판정 기준 (자)" hint="PDF 에서 이 이하로 추출되면 OCR">
+          <input
+            type="number"
+            value={val('rag_ocr_min_chars')}
+            onChange={(e) => set('rag_ocr_min_chars', Number(e.target.value))}
+          />
+        </Field>
+      </div>
+
+      <div className="mute2">
+        PDF 는 텍스트 레이어를 먼저 시도하고, 거의 안 나오면 페이지를 이미지로 렌더링해 OCR 합니다.
+        이미지 파일(.png .jpg 등)은 바로 OCR 대상이 됩니다. 느리므로 문서가 많으면 감안하세요.
+      </div>
+    </div>
   )
 }
 

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from . import db, ollama, paths
+from . import db, migrate, ollama, paths
 from .routers.auth import router as auth_router
 from .routers.chat import router as chat_router
 from .routers.files import router as files_router
@@ -28,6 +28,7 @@ log = logging.getLogger("chatchat.api")
 async def lifespan(app: FastAPI):
     paths.ensure_dirs()
     db.pool()  # 부팅 시 커넥션 확보 실패를 바로 드러낸다
+    migrate.run()
     log.info("api ready (nas=%s)", paths.root())
     yield
     db.close_pool()

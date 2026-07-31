@@ -40,7 +40,7 @@ async def ping() -> dict[str, Any]:
 
 async def chat_stream(
     model: str,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],  # user 메시지에는 vision 용 images(base64) 가 붙을 수 있다
     *,
     temperature: float = 0.7,
     num_ctx: int = 8192,

@@ -64,6 +64,37 @@ def _naive_chunks(vec: list[float], k: int) -> list[dict]:
         return cur.fetchall()
 
 
+def _keyword_chunks(words: list[str], vec: list[float], k: int) -> list[dict]:
+    """본문 키워드 매칭 (pg_trgm GIN 인덱스가 ILIKE 를 가속한다).
+
+    임베딩은 고유명사·모델명·숫자처럼 '정확히 그 글자'를 찾는 질문에 약해서
+    벡터 검색과 병행한다.
+    """
+    if not words:
+        return []
+    patterns = [f"%{w}%" for w in words]
+    with db.cursor(commit=False) as cur:
+        cur.execute(
+            """
+            SELECT c.id, c.content, c.ord, d.id AS document_id, d.path,
+                   (SELECT count(*) FROM unnest(%s::text[]) w
+                     WHERE c.content ILIKE '%%' || w || '%%') AS hits,
+                   CASE WHEN c.embedding IS NULL THEN 0
+                        ELSE 1 - (c.embedding <=> %s::vector) END AS sim
+              FROM chunks c JOIN documents d ON d.id = c.document_id
+             WHERE c.content ILIKE ANY(%s)
+             ORDER BY hits DESC, sim DESC
+             LIMIT %s
+            """,
+            (words, vec, patterns, k),
+        )
+        rows = cur.fetchall()
+    for r in rows:
+        # 벡터 유사도를 기준선으로 두고 적중한 키워드 수만큼 가산한다
+        r["score"] = float(r["sim"]) + min(int(r["hits"]), 4) * 0.05
+    return rows
+
+
 def _seed_entities(vec: list[float], k: int) -> list[dict]:
     with db.cursor(commit=False) as cur:
         cur.execute(
@@ -187,6 +218,7 @@ def _gather(query: str, mode: str, vec: list[float], cfg: dict) -> dict[str, Any
     chunks: dict[int, dict] = {}
     entities: dict[int, dict] = {}
     relations: dict[int, dict] = {}
+    keyword_hits = 0
 
     def add_chunks(rows: list[dict]) -> None:
         for r in rows:
@@ -196,6 +228,12 @@ def _gather(query: str, mode: str, vec: list[float], cfg: dict) -> dict[str, Any
 
     if mode in ("naive", "hybrid"):
         add_chunks(_naive_chunks(vec, k_chunks))
+
+    # 키워드 매칭은 '전부 동원하는' hybrid 에서만 켠다 (naive 는 순수 벡터 유지)
+    if mode == "hybrid" and cfg.get("rag_use_keyword"):
+        rows = _keyword_chunks(keywords(query), vec, int(cfg["rag_top_k_keyword"]))
+        keyword_hits = len(rows)
+        add_chunks(rows)
 
     if mode in ("local", "hybrid"):
         seeds = _seed_entities(vec, k_ents)
@@ -228,7 +266,7 @@ def _gather(query: str, mode: str, vec: list[float], cfg: dict) -> dict[str, Any
     top = sorted(chunks.values(), key=lambda r: float(r["score"]), reverse=True)[:k_chunks]
     ents = sorted(entities.values(), key=lambda e: (-(e.get("degree") or 0), e["name"]))[:k_ents]
     rels = sorted(relations.values(), key=lambda r: -float(r["weight"]))[:k_rels]
-    return {"chunks": top, "entities": ents, "relations": rels}
+    return {"chunks": top, "entities": ents, "relations": rels, "keyword": keyword_hits}
 
 
 def _render(bundle: dict[str, Any]) -> tuple[str, list[dict]]:
@@ -289,6 +327,7 @@ async def retrieve(query: str, mode: str, cfg: dict) -> RagContext:
             "chunks": len(bundle["chunks"]),
             "entities": len(bundle["entities"]),
             "relations": len(bundle["relations"]),
+            "keyword": bundle.get("keyword", 0),
             "ms": int((time.perf_counter() - started) * 1000),
         },
         empty=not prompt_block,

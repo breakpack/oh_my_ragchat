@@ -57,6 +57,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "rag_index_locked_files": False,
     "rag_max_file_mb": 32,
     "rag_extract_graph": True,  # 끄면 벡터 전용 RAG
+    "rag_use_keyword": True,  # 벡터 검색과 별개로 본문 키워드(trgm) 매칭을 병행
+    "rag_top_k_keyword": 6,
+    "rag_ocr_enabled": True,  # 이미지 / 텍스트 없는 PDF 를 OCR 로 읽는다
+    "rag_ocr_langs": "kor+eng",  # tesseract 언어 코드
+    "rag_ocr_min_chars": 80,  # PDF 에서 이 이하로 추출되면 스캔본으로 보고 OCR
     # NAS
     "nas_use_trash": True,
     "nas_show_hidden_default": False,
@@ -64,6 +69,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         ".txt", ".md", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
         ".svg", ".json", ".csv", ".log", ".py", ".ts", ".tsx", ".js", ".sql",
     ],
+    # 채팅 첨부
+    "chat_attach_max_mb": 20,
+    # 이미지 첨부를 OCR 해서 글자도 함께 넘긴다. vision 을 실제로 처리하지 못하는
+    # 모델(예: 일부 MLX 빌드)에서도 이미지 속 텍스트를 읽을 수 있게 하는 안전판.
+    "chat_attach_ocr_images": True,
     # 보안
     "session_days": 30,
     "file_unlock_minutes": 10,
@@ -77,4 +87,6 @@ TEXT_EXTS = {".txt", ".md", ".markdown", ".rst", ".csv", ".log", ".json",
              ".cpp", ".toml", ".ini", ".env"}
 PDF_EXTS = {".pdf"}
 DOCX_EXTS = {".docx"}
-INDEXABLE_EXTS = TEXT_EXTS | PDF_EXTS | DOCX_EXTS
+# OCR 대상. rag_ocr_enabled 가 꺼져 있으면 색인에서 제외된다.
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
+INDEXABLE_EXTS = TEXT_EXTS | PDF_EXTS | DOCX_EXTS | IMAGE_EXTS

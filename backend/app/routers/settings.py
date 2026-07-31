@@ -23,6 +23,9 @@ _RANGES: dict[str, tuple[float, float]] = {
     "rag_top_k_relations": (1, 100),
     "rag_graph_depth": (0, 2),
     "rag_max_file_mb": (1, 1024),
+    "rag_top_k_keyword": (1, 50),
+    "rag_ocr_min_chars": (0, 10000),
+    "chat_attach_max_mb": (1, 256),
     "session_days": (1, 365),
     "file_unlock_minutes": (1, 1440),
 }
@@ -122,6 +125,15 @@ async def models() -> dict:
         })
     items.sort(key=lambda x: x["name"] or "")
     return {"models": items}
+
+
+@router.get("/ocr")
+def ocr_status() -> dict:
+    """tesseract 설치 여부와 쓸 수 있는 언어 (설정 페이지 RAG 탭)."""
+    from ..rag.extract import available_langs
+
+    langs = available_langs()
+    return {"available": bool(langs), "langs": langs}
 
 
 @router.get("/flags")

@@ -129,15 +129,42 @@ export interface Citation {
   score: number
 }
 
+export interface Attachment {
+  kind: 'image' | 'text'
+  name: string
+  path?: string | null
+  chars?: number
+}
+
+/** 전송용. path(NAS 파일) 또는 data(base64) 중 하나를 채운다. */
+export interface AttachmentIn {
+  name: string
+  path?: string
+  data?: string
+}
+
 export interface Message {
   id?: number
   role: 'user' | 'assistant' | 'system'
   content: string
   thinking?: string | null
   citations?: Citation[] | null
+  attachments?: Attachment[] | null
   model?: string | null
   created_at?: string
   pending?: boolean
+}
+
+export interface Preview {
+  path: string
+  name: string
+  ext: string
+  size: number
+  mime: string
+  kind: 'image' | 'pdf' | 'text' | 'markdown' | 'none'
+  text?: string
+  truncated?: boolean
+  error?: string
 }
 
 export interface FileItem {
@@ -162,6 +189,25 @@ export interface DocRow {
   error: string | null
   indexed_at: string | null
   entity_count: number
+  ocr: boolean
+  progress_done: number
+  progress_total: number
+  phase: string | null
+}
+
+/** /api/rag/events 로 흘러오는 워커 이벤트. */
+export interface RagEvent {
+  kind: 'document' | 'progress' | 'scan'
+  document_id?: number
+  path?: string
+  status?: string
+  done?: number
+  total?: number
+  phase?: string
+  error?: string | null
+  chunk_count?: number | null
+  queued?: number
+  removed?: number
 }
 
 export function fmtSize(n: number | null | undefined): string {

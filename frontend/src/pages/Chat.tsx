@@ -2,8 +2,46 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { api, streamSse, type Citation, type Message, type Persona, type Session } from '../api'
+import {
+  api,
+  streamSse,
+  fmtSize,
+  type Attachment,
+  type AttachmentIn,
+  type Citation,
+  type Message,
+  type Persona,
+  type Session,
+} from '../api'
 import { Modal, Toggle, useRun, useToast } from '../ui'
+
+const IMAGE_RE = /\.(png|jpe?g|webp|bmp|tiff?|gif)$/i
+
+/** 첨부 대기 항목. data 는 base64(접두어 제거), preview 는 화면 표시용 data URL. */
+interface Pending {
+  name: string
+  size: number
+  data: string
+  preview?: string
+}
+
+function readAsBase64(file: File): Promise<Pending> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error(`${file.name} 을(를) 읽지 못했습니다`))
+    reader.onload = () => {
+      const url = String(reader.result)
+      const comma = url.indexOf(',')
+      resolve({
+        name: file.name,
+        size: file.size,
+        data: url.slice(comma + 1),
+        preview: IMAGE_RE.test(file.name) ? url : undefined,
+      })
+    }
+    reader.readAsDataURL(file)
+  })
+}
 
 const MODES = [
   { v: 'hybrid', label: '하이브리드' },
@@ -27,10 +65,13 @@ export default function Chat() {
   const [busy, setBusy] = useState(false)
   const [newOpen, setNewOpen] = useState(false)
   const [cite, setCite] = useState<Citation | null>(null)
+  const [pending, setPending] = useState<Pending[]>([])
+  const [dragging, setDragging] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
+  const attachRef = useRef<HTMLInputElement>(null)
 
   const id = sessionId ? Number(sessionId) : null
 
@@ -100,14 +141,29 @@ export default function Chat() {
     if (id === sid) navigate(rest.length ? `/chat/${rest[0].id}` : '/chat', { replace: true })
   }
 
+  const addFiles = async (files: FileList | File[]) => {
+    const items = await Promise.all(Array.from(files).map(readAsBase64)).catch((e) => {
+      toast(e.message, true)
+      return [] as Pending[]
+    })
+    if (items.length) setPending((prev) => [...prev, ...items])
+  }
+
   const send = async () => {
     const text = input.trim()
     if (!text || !id || busy) return
 
+    const attachments: AttachmentIn[] = pending.map((p) => ({ name: p.name, data: p.data }))
+    const shown: Attachment[] = pending.map((p) => ({
+      kind: p.preview ? 'image' : 'text',
+      name: p.name,
+    }))
+
     setInput('')
+    setPending([])
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: text },
+      { role: 'user', content: text, attachments: shown },
       { role: 'assistant', content: '', pending: true, citations: [] },
     ])
     setBusy(true)
@@ -122,7 +178,7 @@ export default function Chat() {
     try {
       await streamSse(
         `/api/chat/sessions/${id}/messages`,
-        { content: text },
+        { content: text, attachments },
         (event, data) => {
           if (event === 'meta') {
             if (data.title) {
@@ -271,19 +327,56 @@ export default function Chat() {
               <div ref={bottomRef} />
             </div>
 
-            <div className="composer">
-              <div className="box">
+            <div
+              className="composer"
+              onDragOver={(e) => {
+                e.preventDefault()
+                setDragging(true)
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault()
+                setDragging(false)
+                if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files)
+              }}
+            >
+              <div className={`box${dragging ? ' over' : ''}`}>
+                {!!pending.length && (
+                  <div className="attachments">
+                    {pending.map((p, i) => (
+                      <span className="attach" key={`${p.name}-${i}`}>
+                        {p.preview ? (
+                          <img className="thumb" src={p.preview} alt="" />
+                        ) : (
+                          <span aria-hidden="true">📄</span>
+                        )}
+                        <span className="nm" title={p.name}>{p.name}</span>
+                        <span className="mute2">{fmtSize(p.size)}</span>
+                        <button
+                          className="ghost sm"
+                          aria-label={`${p.name} 첨부 취소`}
+                          style={{ padding: '0 4px' }}
+                          onClick={() => setPending((prev) => prev.filter((_, j) => j !== i))}
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
                 <textarea
                   ref={taRef}
-                  className="grow"
                   rows={1}
-                  placeholder="메시지를 입력하세요 (Shift+Enter 줄바꿈)"
+                  placeholder={
+                    dragging ? '여기에 놓으면 첨부됩니다' : '무엇이든 물어보세요'
+                  }
                   value={input}
                   onChange={(e) => {
                     setInput(e.target.value)
                     const el = e.target as HTMLTextAreaElement
                     el.style.height = 'auto'
-                    el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+                    el.style.height = `${Math.min(el.scrollHeight, 220)}px`
                   }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -292,16 +385,43 @@ export default function Chat() {
                     }
                   }}
                 />
-                {busy ? (
-                  <button className="danger" onClick={stop}>■ 중단</button>
-                ) : (
-                  <button className="primary" onClick={send} disabled={!input.trim()}>보내기</button>
-                )}
-              </div>
-              <div className="mute2" style={{ marginTop: 6 }}>
-                {session.rag_enabled
-                  ? `RAG 켜짐 · ${MODES.find((m) => m.v === session.rag_mode)?.label}`
-                  : 'RAG 꺼짐 · 일반 대화'}
+
+                <div className="tools">
+                  <button
+                    className="ghost sm"
+                    aria-label="파일 첨부"
+                    title="이미지는 vision 모델로, 문서는 본문을 읽어 프롬프트에 넣습니다"
+                    onClick={() => attachRef.current?.click()}
+                  >
+                    + 첨부
+                  </button>
+                  <input
+                    ref={attachRef}
+                    type="file"
+                    multiple
+                    hidden
+                    onChange={(e) => {
+                      if (e.target.files) addFiles(e.target.files)
+                      e.target.value = ''
+                    }}
+                  />
+
+                  <span className={`badge${session.rag_enabled ? ' on' : ''}`}>
+                    {session.rag_enabled
+                      ? `RAG · ${MODES.find((m) => m.v === session.rag_mode)?.label}`
+                      : '일반 대화'}
+                  </span>
+
+                  <span className="hint mute2">Shift+Enter 줄바꿈</span>
+
+                  {busy ? (
+                    <button className="danger" onClick={stop}>중단</button>
+                  ) : (
+                    <button className="primary" onClick={send} disabled={!input.trim()}>
+                      보내기
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </>
@@ -344,6 +464,26 @@ function MessageView({ m, onCite }: { m: Message; onCite: (c: Citation) => void 
             <summary>사고 과정</summary>
             <div className="t">{m.thinking}</div>
           </details>
+        )}
+
+        {!!m.attachments?.length && (
+          <div className="attachments">
+            {m.attachments.map((a: Attachment, i: number) => (
+              <span className="attach" key={`${a.name}-${i}`}>
+                {a.kind === 'image' && a.path ? (
+                  <img
+                    className="thumb"
+                    src={`/api/files/content?path=${encodeURIComponent(a.path)}`}
+                    alt=""
+                  />
+                ) : (
+                  <span aria-hidden="true">{a.kind === 'image' ? '🖼️' : '📄'}</span>
+                )}
+                <span className="nm" title={a.name}>{a.name}</span>
+                {a.chars ? <span className="mute2">{a.chars}자</span> : null}
+              </span>
+            ))}
+          </div>
         )}
 
         {m.role === 'user' ? (

@@ -28,7 +28,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from .. import db, deps, flags, jobs, paths, security
-from ..config import INDEXABLE_EXTS, env
+from ..config import DOCX_EXTS, IMAGE_EXTS, INDEXABLE_EXTS, PDF_EXTS, TEXT_EXTS, env
+from ..rag import extract as extractor
 
 router = APIRouter(prefix="/api/files", tags=["files"], dependencies=[deps.Auth])
 
@@ -305,6 +306,55 @@ def content(
         filename=target.name,
         content_disposition_type=disposition,
     )
+
+
+PREVIEW_TEXT_LIMIT = 400_000
+
+
+@router.get("/preview")
+def preview(
+    cfg: deps.Settings,
+    path: str = Query(...),
+) -> dict:
+    """인라인 미리보기용 메타데이터. 텍스트 계열은 본문까지 함께 준다.
+
+    이미지·PDF 는 프론트가 /api/files/content 를 직접 물리므로 종류만 알려준다.
+    """
+    rel = paths.normalize(path)
+    target = paths.resolve(rel)
+    if target.is_dir():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="폴더는 미리볼 수 없습니다")
+
+    if security.is_locked(rel) and not security.is_unlocked(rel):
+        raise HTTPException(status.HTTP_423_LOCKED, detail="이 파일은 비밀번호로 잠겨 있습니다")
+
+    ext = target.suffix.lower()
+    size = target.stat().st_size
+    base = {"path": rel, "name": target.name, "ext": ext, "size": size,
+            "mime": mimetypes.guess_type(target.name)[0] or "application/octet-stream"}
+
+    if ext in IMAGE_EXTS:
+        return {**base, "kind": "image"}
+    if ext in PDF_EXTS:
+        return {**base, "kind": "pdf"}
+    if ext not in TEXT_EXTS and ext not in DOCX_EXTS:
+        return {**base, "kind": "none"}
+
+    try:
+        result = extractor.extract(target, cfg)
+    except extractor.Unsupported:
+        return {**base, "kind": "none"}
+    except Exception as exc:  # noqa: BLE001 - 미리보기 실패가 페이지를 깨선 안 된다
+        return {**base, "kind": "none", "error": f"{type(exc).__name__}: {exc}"}
+
+    text = result.text
+    truncated = len(text) > PREVIEW_TEXT_LIMIT
+    return {
+        **base,
+        "kind": "markdown" if ext in (".md", ".markdown") else "text",
+        "text": text[:PREVIEW_TEXT_LIMIT],
+        "truncated": truncated,
+    }
 
 
 class UnlockIn(BaseModel):

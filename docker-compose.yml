@@ -37,6 +37,7 @@ services:
       - ${NAS_HOST_PATH:-./data/nas}:/data/nas
       - ./data/trash:/data/trash
       - ./data/tmp:/data/tmp
+      - ./db/migrations:/srv/migrations:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     expose: ["8000"]
@@ -59,6 +60,7 @@ services:
       - ${NAS_HOST_PATH:-./data/nas}:/data/nas
       - ./data/trash:/data/trash
       - ./data/tmp:/data/tmp
+      - ./db/migrations:/srv/migrations:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

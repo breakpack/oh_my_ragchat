@@ -6,9 +6,10 @@ from typing import Any
 
 import anyio
 from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .. import db, deps, jobs, paths
+from .. import db, deps, events, jobs, paths
 from ..config import RAG_MODES
 from ..rag import graph as graph_mod
 from ..rag import index as index_mod
@@ -37,6 +38,7 @@ def documents(
         cur.execute(
             f"""
             SELECT id, path, size, status, chunk_count, error, indexed_at, created_at,
+                   ocr, progress_done, progress_total, phase,
                    (SELECT count(DISTINCT ce.entity_id)
                       FROM chunks c JOIN chunk_entities ce ON ce.chunk_id = c.id
                      WHERE c.document_id = d.id) AS entity_count
@@ -54,6 +56,32 @@ def documents(
         by_status = {r["status"]: r["n"] for r in cur.fetchall()}
 
     return {"documents": rows, "total": total, "by_status": by_status}
+
+
+@router.get("/events")
+async def rag_events() -> StreamingResponse:
+    """인덱싱 진행률 SSE. worker 가 Postgres NOTIFY 로 밀어준 걸 그대로 흘린다.
+
+    GET 이므로 프론트는 EventSource 로 붙는다 (쿠키는 same-origin 으로 자동 전송).
+    """
+
+    async def gen():
+        yield ": connected\n\n"
+        async for payload in events.subscribe():
+            if payload is None:
+                yield ": ping\n\n"  # 프록시가 유휴 연결을 끊지 않게
+            else:
+                yield f"data: {payload}\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.get("/documents/{doc_id}/chunks")

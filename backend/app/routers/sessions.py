@@ -119,7 +119,7 @@ def messages(session_id: int, limit: int = Query(500, ge=1, le=2000)) -> dict:
     with db.cursor(commit=False) as cur:
         cur.execute(
             """
-            SELECT id, role, content, thinking, citations, model, created_at
+            SELECT id, role, content, thinking, citations, model, attachments, created_at
               FROM chat_messages
              WHERE session_id = %s
              ORDER BY id
