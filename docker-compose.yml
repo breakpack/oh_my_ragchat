@@ -1,0 +1,86 @@
+name: chatchat
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-chatchat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chatchat}
+      POSTGRES_DB: ${POSTGRES_DB:-chatchat}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    # 호스트에서 psql 로 직접 붙고 싶을 때만 주석 해제
+    # ports:
+    #   - "${DB_HOST_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chatchat} -d ${POSTGRES_DB:-chatchat}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-chatchat}:${POSTGRES_PASSWORD:-chatchat}@db:5432/${POSTGRES_DB:-chatchat}
+      NAS_ROOT: /data/nas
+      TRASH_ROOT: /data/trash
+      TMP_ROOT: /data/tmp
+    volumes:
+      - ${NAS_HOST_PATH:-./data/nas}:/data/nas
+      - ./data/trash:/data/trash
+      - ./data/tmp:/data/tmp
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    expose: ["8000"]
+
+  worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-chatchat}:${POSTGRES_PASSWORD:-chatchat}@db:5432/${POSTGRES_DB:-chatchat}
+      NAS_ROOT: /data/nas
+      TRASH_ROOT: /data/trash
+      TMP_ROOT: /data/tmp
+    volumes:
+      - ${NAS_HOST_PATH:-./data/nas}:/data/nas
+      - ./data/trash:/data/trash
+      - ./data/tmp:/data/tmp
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  web:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on: [api]
+    ports:
+      - "${WEB_PORT:-3040}:80"
+
+  # macOS 에서는 컨테이너가 Metal GPU 를 못 쓰므로 Ollama 는 호스트 네이티브로 실행한다.
+  # (brew services start ollama) 리눅스로 이전할 때만 아래를 사용하고,
+  # OLLAMA_BASE_URL 을 http://ollama:11434 로 바꾼다.
+  #
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ollama:/root/.ollama
+  #   expose: ["11434"]
+
+volumes:
+  pgdata:
+  # ollama:

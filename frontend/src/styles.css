@@ -1,0 +1,600 @@
+/* ============================================================================
+   chatchat — 여기어때 YDS 6.0 (DESIGN.md) 기반 스타일
+   ----------------------------------------------------------------------------
+   증거 수준을 섞지 않는다 (DESIGN.md §12):
+     [공식]  YDS 6.0 foundation 에 명시된 토큰. 값을 바꾸지 말 것.
+     [파생]  문서에 없어 이 앱에서 만든 값. 공식 토큰으로 취급하지 않는다.
+   motion duration/easing, breakpoint 는 공개 근거가 없으므로 토큰화하지 않는다.
+   ========================================================================== */
+
+:root {
+  /* ── 색: [공식] YDS palette ── */
+  --primary: #1d8bff;        /* Cyan 800 — 핵심 행동/선택 */
+  --canvas: #ffffff;         /* White — 기본 surface */
+  --fg: #222222;             /* Neutral 900 — 기본 foreground */
+  --border: #e6e6e6;         /* Neutral 100 — outline / divider */
+  --red: #f94239;            /* Lively Red 800 — 경고 */
+  --red-tint: #ffedea;       /* Lively Red 100 */
+  --blue-tint: #e3f0ff;      /* Cyan 100 */
+  --yellow: #ffc83b;         /* Yellow 800 — rating / 주의 */
+  --slate: #49627a;          /* Navy 500 — 보조 강조 */
+
+  /* ── 색: [파생] 중립 단계. 캡션·비활성·앱 크롬용으로만 쓴다 ── */
+  --n-page: #f7f8f9;         /* 카드(#fff)가 읽히도록 한 단계 낮춘 배경 */
+  --n-fill: #f2f3f5;         /* 입력 비활성 / subtle fill */
+  --n-600: #767676;          /* caption / secondary text */
+  --n-700: #555555;          /* body secondary */
+
+  /* ── 타이포: [공식] Pretendard + YDS scale ── */
+  --font-sans: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont,
+    system-ui, 'Apple SD Gothic Neo', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --display-lg-size: 32px;   --display-lg-lh: 1.1875;
+  --display-md-size: 24px;   --display-md-lh: 1.1667;
+  --title-lg-size: 18px;     --title-lg-lh: 1.1111;
+  --body-md-size: 14px;      --body-md-lh: 1.4286;
+  --caption-lg-size: 12px;   --caption-lg-lh: 1.3333;
+
+  /* ── 간격: [공식] 2 4 8 10 12 14 16 20 24 28 32 36 40 48 56 64 96 ── */
+  --sp-xs: 2px;  --sp-sm: 4px;  --sp-md: 8px;  --sp-10: 10px; --sp-12: 12px;
+  --sp-base: 16px; --sp-20: 20px; --sp-lg: 24px; --sp-xl: 32px;
+  --sp-xxl: 48px; --sp-section: 64px;
+
+  /* ── 라운드: [공식] 2 3 4 8 10 12 16 20 / 50%. core = 8·12·20 ── */
+  --r-xs: 2px; --r-sm: 4px; --r-md: 8px; --r-lg: 12px; --r-xl: 20px; --r-full: 9999px;
+
+  /* ── 그림자: [공식] Flat / Raised / Sheet ── */
+  --shadow-flat: 0 1px 2px rgba(0, 0, 0, .06);
+  --shadow-raised: 0 2px 16px rgba(0, 0, 0, .08);
+  --shadow-sheet: 0 4px 20px rgba(0, 0, 0, .32);
+
+  /* ── 레이아웃: [공식] 기본 화면 좌우 margin 20px ── */
+  --screen-margin: 20px;
+
+  /* 기존 클래스 호환용 별칭 */
+  --line: var(--border);
+  --err: var(--red);
+
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  background: var(--n-page);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--body-md-size);
+  line-height: var(--body-md-lh);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 링크에만 underline (DESIGN.md §3) */
+a { color: var(--primary); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* 상태는 색만으로 구분하지 않는다 → 어디서나 보이는 focus 링 (§14) */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* ── 타이포 유틸 ── */
+.display-lg { font-size: var(--display-lg-size); line-height: var(--display-lg-lh); font-weight: 700; }
+.display-md { font-size: var(--display-md-size); line-height: var(--display-md-lh); font-weight: 700; }
+.title-lg   { font-size: var(--title-lg-size);   line-height: var(--title-lg-lh);   font-weight: 700; }
+.caption    { font-size: var(--caption-lg-size); line-height: var(--caption-lg-lh); color: var(--n-600); }
+
+.muted { color: var(--n-700); }
+.mute2 { font-size: var(--caption-lg-size); line-height: var(--caption-lg-lh); color: var(--n-600); }
+.mono { font-family: var(--font-mono); font-size: 12.5px; }
+
+.row { display: flex; gap: var(--sp-md); align-items: center; }
+.col { display: flex; flex-direction: column; gap: var(--sp-md); }
+.grow { flex: 1; min-width: 0; }
+.right { margin-left: auto; }
+.wrap { flex-wrap: wrap; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ============================== Button ==============================
+   [공식] Primary: bg #1D8BFF / fg #FFFFFF / radius 8px
+          states: enabled, pressed, disabled
+   hover 는 공개 명세에 없으므로 토큰화하지 않고 최소한으로만 둔다. */
+
+button {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--fg);
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 8px 14px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { background: var(--n-fill); }
+button:active:not(:disabled) { background: #eaebee; }      /* pressed */
+button:disabled { opacity: .4; cursor: not-allowed; }
+
+button.primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+}
+button.primary:hover:not(:disabled) { background: #1580f0; border-color: #1580f0; }
+button.primary:active:not(:disabled) { background: #1173da; border-color: #1173da; }
+
+button.danger { color: var(--red); border-color: var(--border); }
+button.danger:hover:not(:disabled) { background: var(--red-tint); border-color: var(--red); }
+
+button.ghost { background: transparent; border-color: transparent; color: var(--n-600); padding: 6px 8px; }
+button.ghost:hover:not(:disabled) { background: var(--n-fill); color: var(--fg); }
+button.ghost.danger { color: var(--red); }
+
+button.sm { padding: 4px 10px; font-size: var(--caption-lg-size); border-radius: var(--r-sm); }
+
+/* ============================== Input ===============================
+   [공식] Search bar: bg #FFFFFF / fg #222222 / radius 12px
+          states: idle, focused, typing, populated */
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: var(--body-md-size);
+  line-height: var(--body-md-lh);
+  color: var(--fg);
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 9px 12px;
+  width: 100%;
+  outline: none;
+}
+input::placeholder, textarea::placeholder { color: var(--n-600); }
+input:hover, select:hover, textarea:hover { border-color: #d6d6d6; }
+input:focus, select:focus, textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--blue-tint);   /* focused */
+}
+input:disabled, select:disabled, textarea:disabled { background: var(--n-fill); color: var(--n-600); }
+textarea { resize: vertical; }
+select {
+  appearance: none;
+  padding-right: 30px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--n-600) 50%),
+                    linear-gradient(135deg, var(--n-600) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+label {
+  display: block;
+  font-size: var(--caption-lg-size);
+  line-height: var(--caption-lg-lh);
+  font-weight: 600;
+  color: var(--n-700);
+  margin-bottom: var(--sp-sm);
+}
+.field { margin-bottom: var(--sp-base); }
+
+/* =============================== Card ===============================
+   [공식] Listing card: bg #FFFFFF / radius 12px / shadow none 또는 Flat */
+
+.card {
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-flat);
+  padding: var(--sp-base);
+  margin-bottom: var(--sp-12);   /* [공식] module section bottom spacing 12px */
+}
+/* .right(margin-left:auto)로 우측 액션을 붙일 수 있게 flex 로 둔다 */
+.card h3 {
+  margin: 0 0 var(--sp-12);
+  font-size: var(--title-lg-size);
+  line-height: var(--title-lg-lh);
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+  flex-wrap: wrap;
+}
+.card h3 .mute2 { font-weight: 400; }
+
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--sp-base); }
+
+/* =============================== Badge ==============================
+   [공식] Price marker: bg #FFFFFF / fg #222222 / radius 20px
+   [관찰] Filter chip:  bg #FFFFFF / fg #222222 / border 1.5px #E6E6E6 / radius full
+   의미는 색이 아니라 텍스트로 전달한다 (§14). */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  font-size: var(--caption-lg-size);
+  line-height: var(--caption-lg-lh);
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: var(--r-full);
+  background: var(--canvas);
+  color: var(--fg);
+  border: 1.5px solid var(--border);
+  white-space: nowrap;
+}
+.badge.ok { color: #1f7a33; border-color: #b7e0c0; background: #f0faf2; }
+.badge.err { color: var(--red); border-color: #f9c3bd; background: var(--red-tint); }
+.badge.warn { color: #8a6100; border-color: #f4dda2; background: #fff8e6; }
+.badge.on { color: var(--primary); border-color: var(--primary); background: var(--blue-tint); }
+
+/* =============================== Tabs =============================== */
+
+.tabs {
+  display: flex;
+  gap: var(--sp-lg);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--sp-lg);
+}
+.tabs button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: var(--sp-12) 0;
+  font-size: var(--body-md-size);
+  font-weight: 600;
+  color: var(--n-600);
+}
+.tabs button:hover:not(:disabled) { background: none; color: var(--fg); }
+.tabs button.active { color: var(--primary); border-bottom-color: var(--primary); }
+
+/* =============================== Table ============================== */
+
+table { width: 100%; border-collapse: collapse; }
+th, td {
+  text-align: left;
+  padding: var(--sp-12) var(--sp-base);
+  border-bottom: 1px solid var(--border);
+}
+th {
+  font-size: var(--caption-lg-size);
+  line-height: var(--caption-lg-lh);
+  font-weight: 600;
+  color: var(--n-600);
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: var(--n-page); }
+
+/* ============================== Dialog ==============================
+   [공식] dialog 에는 Raised, bottom sheet 에는 Sheet. module radius 20px. */
+
+.modal-bg {
+  position: fixed;
+  inset: 0;
+  background: rgba(34, 34, 34, .45);
+  display: grid;
+  place-items: center;
+  z-index: 40;
+  padding: var(--sp-20);
+}
+.modal {
+  background: var(--canvas);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-raised);
+  padding: var(--sp-lg);
+  width: 440px;
+  max-width: 100%;
+  max-height: 90vh;
+  overflow: auto;
+}
+.modal h3 {
+  margin: 0 0 var(--sp-base);
+  font-size: var(--display-md-size);
+  line-height: var(--display-md-lh);
+  font-weight: 700;
+}
+.modal footer {
+  display: flex;
+  gap: var(--sp-md);
+  justify-content: flex-end;
+  margin-top: var(--sp-lg);
+}
+
+/* ============================== Toast =============================== */
+
+.toast {
+  position: fixed;
+  right: var(--sp-20);
+  bottom: var(--sp-20);
+  z-index: 50;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary);
+  box-shadow: var(--shadow-raised);
+  padding: var(--sp-12) var(--sp-base);
+  border-radius: var(--r-lg);
+  max-width: 380px;
+}
+.toast.err { border-left-color: var(--red); background: var(--red-tint); }
+
+/* ============================== 레이아웃 ============================= */
+
+.app { display: flex; height: 100%; }
+
+.nav {
+  width: 76px;
+  background: var(--canvas);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--sp-base) 0;
+  gap: var(--sp-sm);
+}
+.nav .brand {
+  font-size: var(--title-lg-size);
+  font-weight: 700;
+  color: var(--primary);
+  margin-bottom: var(--sp-12);
+}
+.nav a {
+  width: 60px;
+  padding: var(--sp-12) 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-lg);
+  color: var(--n-600);
+  font-size: 13px;
+  font-weight: 600;
+}
+.nav a:hover { background: var(--n-page); color: var(--fg); text-decoration: none; }
+.nav a.active { background: var(--blue-tint); color: var(--primary); }
+
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+/* [공식] 기본 화면 좌우 margin 20px */
+.page { flex: 1; overflow: auto; padding: var(--sp-lg) var(--screen-margin) var(--sp-xl); }
+.page > header { margin-bottom: var(--sp-lg); }
+.page h2 {
+  margin: 0 0 var(--sp-sm);
+  font-size: var(--display-md-size);
+  line-height: var(--display-md-lh);
+  font-weight: 700;
+}
+
+.empty {
+  text-align: center;
+  color: var(--n-600);
+  padding: var(--sp-xxl) var(--sp-20);
+}
+
+/* ============================== 로그인 ============================== */
+
+.auth { display: grid; place-items: center; height: 100%; background: var(--n-page); }
+.auth .card { width: 380px; padding: var(--sp-xl); box-shadow: var(--shadow-raised); border: none; }
+.auth h1 {
+  font-size: var(--display-lg-size);
+  line-height: var(--display-lg-lh);
+  font-weight: 700;
+  margin: 0 0 var(--sp-md);
+  color: var(--primary);
+}
+
+/* ============================== 채팅 ================================ */
+
+.chat { display: flex; height: 100%; min-height: 0; }
+
+.sessions {
+  width: 260px;
+  border-right: 1px solid var(--border);
+  background: var(--canvas);
+  display: flex;
+  flex-direction: column;
+}
+.sessions header { padding: var(--sp-base); border-bottom: 1px solid var(--border); }
+.sessions .list { flex: 1; overflow: auto; padding: var(--sp-md); }
+.sessions .item {
+  padding: var(--sp-12);
+  border-radius: var(--r-lg);
+  cursor: pointer;
+  margin-bottom: var(--sp-sm);
+  display: flex;
+  gap: var(--sp-md);
+  align-items: center;
+}
+.sessions .item:hover { background: var(--n-page); }
+.sessions .item.active { background: var(--blue-tint); }
+.sessions .item.active .t { color: var(--primary); font-weight: 600; }
+.sessions .item .t { font-size: var(--body-md-size); }
+.sessions .item .x { opacity: 0; }
+.sessions .item:hover .x, .sessions .item:focus-within .x { opacity: 1; }
+
+.thread { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.thread .bar {
+  display: flex;
+  gap: var(--sp-md);
+  align-items: center;
+  flex-wrap: wrap;
+  padding: var(--sp-12) var(--screen-margin);
+  border-bottom: 1px solid var(--border);
+  background: var(--canvas);
+}
+.thread .bar .title {
+  font-size: var(--title-lg-size);
+  line-height: var(--title-lg-lh);
+  font-weight: 700;
+}
+.thread .msgs { flex: 1; overflow: auto; padding: var(--sp-lg) var(--screen-margin) var(--sp-md); }
+.thread .composer {
+  border-top: 1px solid var(--border);
+  padding: var(--sp-12) var(--screen-margin) var(--sp-base);
+  background: var(--canvas);
+}
+
+.msg { max-width: 840px; margin: 0 auto var(--sp-lg); display: flex; gap: var(--sp-12); }
+.msg .who {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-full);
+  flex: none;
+  display: grid;
+  place-items: center;
+  font-size: var(--caption-lg-size);
+  font-weight: 700;
+  background: var(--n-fill);
+  color: var(--n-700);
+}
+.msg.user .who { background: var(--primary); color: #ffffff; }
+.msg .body { min-width: 0; flex: 1; }
+.msg .body > :first-child { margin-top: 0; }
+.msg .body > :last-child { margin-bottom: 0; }
+
+/* 사용자 발화는 Cyan 100 surface 로 구분한다 */
+.msg.user .bubble {
+  background: var(--blue-tint);
+  border-radius: var(--r-lg);
+  padding: var(--sp-12) var(--sp-base);
+  white-space: pre-wrap;
+}
+
+.msg pre {
+  background: var(--n-page);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--sp-12) var(--sp-base);
+  overflow: auto;
+}
+.msg code { font-family: var(--font-mono); font-size: 12.5px; }
+.msg :not(pre) > code {
+  background: var(--n-fill);
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+}
+.msg table { margin: var(--sp-md) 0; }
+.msg blockquote {
+  margin: var(--sp-md) 0;
+  padding-left: var(--sp-12);
+  border-left: 3px solid var(--border);
+  color: var(--n-700);
+}
+
+.think {
+  background: var(--n-page);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--sp-md) var(--sp-12);
+  margin-bottom: var(--sp-12);
+}
+.think summary {
+  cursor: pointer;
+  font-size: var(--caption-lg-size);
+  font-weight: 600;
+  color: var(--n-600);
+}
+.think .t {
+  white-space: pre-wrap;
+  margin-top: var(--sp-md);
+  font-size: var(--caption-lg-size);
+  line-height: var(--body-md-lh);
+  color: var(--n-700);
+}
+
+.cites { display: flex; gap: var(--sp-md); flex-wrap: wrap; margin-top: var(--sp-12); }
+.cite {
+  font-size: var(--caption-lg-size);
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--r-full);
+  background: var(--canvas);
+  border: 1.5px solid var(--border);
+  color: var(--fg);
+  cursor: pointer;
+}
+.cite:hover { border-color: var(--primary); color: var(--primary); }
+
+.composer .box {
+  display: flex;
+  gap: var(--sp-md);
+  align-items: flex-end;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-md) var(--sp-md) var(--sp-md) var(--sp-base);
+}
+.composer .box:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px var(--blue-tint); }
+.composer textarea {
+  border: none;
+  background: transparent;
+  padding: 6px 0;
+  max-height: 200px;
+  min-height: 26px;
+}
+.composer textarea:focus { border: none; box-shadow: none; }
+
+/* Filter chip 형태의 토글. 상태는 색 + 텍스트로 함께 표시한다 (§14) */
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-md);
+  cursor: pointer;
+  padding: 7px 14px;
+  border-radius: var(--r-full);
+  border: 1.5px solid var(--border);
+  background: var(--canvas);
+  font-size: var(--caption-lg-size);
+  font-weight: 600;
+  color: var(--fg);
+  user-select: none;
+}
+.toggle:hover { border-color: #d6d6d6; }
+.toggle.on { color: var(--primary); border-color: var(--primary); background: var(--blue-tint); }
+.toggle:focus-within { outline: 2px solid var(--primary); outline-offset: 2px; }
+.toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+
+.dot { width: 8px; height: 8px; border-radius: var(--r-full); background: #c4c4c4; flex: none; }
+.dot.on { background: var(--primary); }
+.dot.ok { background: #1f9d3d; }
+.dot.err { background: var(--red); }
+
+.cursor::after { content: '▋'; margin-left: 2px; opacity: .5; }
+
+/* ============================== 파일 ================================ */
+
+.crumbs { display: flex; gap: var(--sp-sm); align-items: center; flex-wrap: wrap; }
+.crumbs a { color: var(--n-600); cursor: pointer; font-weight: 600; }
+.crumbs a:hover { color: var(--primary); }
+.crumbs .sep { color: var(--border); }
+
+.files td.name { display: flex; gap: var(--sp-md); align-items: center; }
+.files .ico { width: 20px; text-align: center; flex: none; }
+.files .fname { cursor: pointer; }
+.files .fname:hover { color: var(--primary); text-decoration: underline; }
+.files tr.is-hidden td .fname, .files tr.is-hidden td .ico { opacity: .55; }
+.files .acts { opacity: 0; white-space: nowrap; display: flex; gap: var(--sp-xs); justify-content: flex-end; }
+.files tr:hover .acts, .files tr:focus-within .acts { opacity: 1; }
+
+.drop {
+  border: 1.5px dashed var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-base);
+  text-align: center;
+  color: var(--n-600);
+  font-size: var(--caption-lg-size);
+  margin-bottom: var(--sp-12);
+  background: var(--canvas);
+}
+.drop.over { border-color: var(--primary); color: var(--primary); background: var(--blue-tint); }
+
+/* ============================== 기타 ================================ */
+
+.stat-value { font-size: var(--display-md-size); line-height: var(--display-md-lh); font-weight: 700; }
+
+.card.flush { padding: 0; overflow: hidden; }
+.card.flush > table th:first-child,
+.card.flush > table td:first-child { padding-left: var(--sp-base); }

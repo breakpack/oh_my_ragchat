@@ -1,0 +1,184 @@
+export class ApiError extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetch(path, {
+    credentials: 'same-origin',
+    ...init,
+    headers: {
+      ...(init.body && !(init.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
+      ...(init.headers || {}),
+    },
+  })
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`
+    try {
+      const body = await res.json()
+      if (body?.detail) detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
+    } catch { /* 본문이 JSON 이 아니면 상태줄을 그대로 쓴다 */ }
+    throw new ApiError(res.status, detail)
+  }
+  if (res.status === 204) return undefined as T
+  return res.json() as Promise<T>
+}
+
+export const api = {
+  get: <T,>(path: string) => request<T>(path),
+  post: <T,>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) }),
+  put: <T,>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'PUT', body: body === undefined ? undefined : JSON.stringify(body) }),
+  patch: <T,>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'PATCH', body: body === undefined ? undefined : JSON.stringify(body) }),
+  del: <T,>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'DELETE', body: body === undefined ? undefined : JSON.stringify(body) }),
+  upload: <T,>(path: string, form: FormData) => request<T>(path, { method: 'POST', body: form }),
+}
+
+// ─────────────────────────── SSE ───────────────────────────
+// EventSource 는 POST 를 못 하므로 fetch 스트림을 직접 파싱한다.
+
+export type SseHandler = (event: string, data: any) => void
+
+export async function streamSse(
+  path: string,
+  body: unknown,
+  onEvent: SseHandler,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(path, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify(body),
+    signal,
+  })
+  if (!res.ok || !res.body) {
+    let detail = `${res.status} ${res.statusText}`
+    try {
+      const j = await res.json()
+      if (j?.detail) detail = j.detail
+    } catch { /* noop */ }
+    throw new ApiError(res.status, detail)
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    let sep: number
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const raw = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+
+      let event = 'message'
+      const dataLines: string[] = []
+      for (const line of raw.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
+      }
+      if (!dataLines.length) continue
+      try {
+        onEvent(event, JSON.parse(dataLines.join('\n')))
+      } catch {
+        onEvent(event, dataLines.join('\n'))
+      }
+    }
+  }
+}
+
+// ─────────────────────────── 타입 ───────────────────────────
+
+export interface Session {
+  id: number
+  title: string
+  persona_id: number | null
+  persona_name?: string | null
+  model: string | null
+  rag_enabled: boolean
+  rag_mode: string
+  message_count?: number
+  updated_at: string
+}
+
+export interface Persona {
+  id: number
+  name: string
+  system_prompt: string
+  model: string | null
+  temperature: number | null
+  is_default: boolean
+}
+
+export interface Citation {
+  tag: string
+  path: string
+  document_id: number
+  chunk_id: number
+  excerpt: string
+  score: number
+}
+
+export interface Message {
+  id?: number
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  thinking?: string | null
+  citations?: Citation[] | null
+  model?: string | null
+  created_at?: string
+  pending?: boolean
+}
+
+export interface FileItem {
+  name: string
+  path: string
+  is_dir: boolean
+  size: number | null
+  mtime: number
+  ext: string
+  hidden: boolean
+  locked: boolean
+  note: string | null
+  indexable: boolean
+}
+
+export interface DocRow {
+  id: number
+  path: string
+  size: number | null
+  status: string
+  chunk_count: number
+  error: string | null
+  indexed_at: string | null
+  entity_count: number
+}
+
+export function fmtSize(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '-'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = n
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
+}
+
+export function fmtTime(t: number | string | null | undefined): string {
+  if (!t) return '-'
+  const d = typeof t === 'number' ? new Date(t * 1000) : new Date(t)
+  if (Number.isNaN(d.getTime())) return '-'
+  return d.toLocaleString('ko-KR', { dateStyle: 'short', timeStyle: 'short' })
+}

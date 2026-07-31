@@ -1,0 +1,287 @@
+"""문서 인덱싱 파이프라인 (워커에서 sync 로 실행).
+
+status 흐름: pending → extracting → embedding → graphing → ready | error | skipped
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+from pathlib import Path
+
+import httpx
+
+from .. import db, flags, jobs, ollama, paths, security
+from ..config import INDEXABLE_EXTS, env
+from . import chunk as chunker
+from . import extract as extractor
+from . import graph
+
+log = logging.getLogger("chatchat.rag.index")
+
+EMBED_BATCH = 16
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fp:
+        while block := fp.read(1 << 20):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _set_status(doc_id: int, status: str, **extra) -> None:
+    with db.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE documents
+               SET status = %s,
+                   error = %s,
+                   chunk_count = COALESCE(%s, chunk_count),
+                   indexed_at = CASE WHEN %s = 'ready' THEN now() ELSE indexed_at END
+             WHERE id = %s
+            """,
+            (status, extra.get("error"), extra.get("chunk_count"), status, doc_id),
+        )
+
+
+def _upsert_document(rel: str, st: os.stat_result, digest: str) -> dict:
+    with db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO documents (path, mtime, size, sha256, status)
+            VALUES (%s, %s, %s, %s, 'pending')
+            ON CONFLICT (path) DO UPDATE
+               SET mtime = EXCLUDED.mtime, size = EXCLUDED.size, sha256 = EXCLUDED.sha256
+            RETURNING id, status, sha256
+            """,
+            (rel, st.st_mtime, st.st_size, digest),
+        )
+        return cur.fetchone()
+
+
+def excluded(rel: str, cfg: dict) -> str | None:
+    """인덱싱에서 빼야 할 이유. 없으면 None."""
+    if Path(rel).suffix.lower() not in INDEXABLE_EXTS:
+        return "지원하지 않는 확장자"
+    if flags.is_hidden_inherited(rel):
+        return "숨김 처리된 경로"
+    if not cfg["rag_index_locked_files"] and security.is_locked(rel):
+        return "잠긴 파일"
+    if not any(paths.is_under(rel, w) for w in (cfg["rag_watch_dirs"] or [])):
+        return "감시 폴더 밖"
+    return None
+
+
+def index_document(rel: str, cfg: dict, *, force: bool = False,
+                   client: httpx.Client | None = None) -> str:
+    """단일 문서 인덱싱. 반환값은 최종 status."""
+    rel = paths.normalize(rel)
+    abs_path = env.nas_root / rel
+
+    if not abs_path.is_file():
+        delete_document(rel)
+        return "deleted"
+
+    reason = excluded(rel, cfg)
+    if reason:
+        delete_document(rel)
+        log.info("건너뜀 %s (%s)", rel, reason)
+        return "skipped"
+
+    st = abs_path.stat()
+    size_mb = st.st_size / (1024 * 1024)
+    if size_mb > float(cfg["rag_max_file_mb"]):
+        _mark_skipped(rel, st, f"파일이 너무 큽니다 ({size_mb:.1f}MB)")
+        return "skipped"
+
+    digest = _sha256(abs_path)
+    doc = _upsert_document(rel, st, digest)
+    doc_id = doc["id"]
+
+    if not force and doc["status"] == "ready" and doc["sha256"] == digest:
+        return "ready"  # 내용이 그대로면 다시 만들 이유가 없다
+
+    owned = client is None
+    client = client or httpx.Client(timeout=600)
+    try:
+        _set_status(doc_id, "extracting")
+        try:
+            text = extractor.extract(abs_path)
+        except extractor.Unsupported as exc:
+            _set_status(doc_id, "skipped", error=str(exc))
+            return "skipped"
+
+        pieces = chunker.split(
+            text, int(cfg["rag_chunk_size"]), int(cfg["rag_chunk_overlap"])
+        )
+        if not pieces:
+            _set_status(doc_id, "skipped", error="추출된 텍스트가 없습니다", chunk_count=0)
+            return "skipped"
+
+        _set_status(doc_id, "embedding", chunk_count=len(pieces))
+        _replace_chunks(doc_id, pieces, cfg, client)
+
+        if cfg["rag_extract_graph"]:
+            _set_status(doc_id, "graphing")
+            _build_graph(doc_id, cfg, client)
+
+        _set_status(doc_id, "ready", chunk_count=len(pieces))
+        log.info("인덱싱 완료 %s (청크 %d)", rel, len(pieces))
+        return "ready"
+    except Exception as exc:  # noqa: BLE001 - 실패는 문서 행에 기록하고 큐는 계속 돈다
+        log.exception("인덱싱 실패 %s", rel)
+        _set_status(doc_id, "error", error=f"{type(exc).__name__}: {exc}")
+        return "error"
+    finally:
+        if owned:
+            client.close()
+
+
+def _mark_skipped(rel: str, st: os.stat_result, reason: str) -> None:
+    # mtime/size 를 같이 남겨야 다음 스캔이 "변경됨" 으로 오인해 다시 큐잉하지 않는다
+    with db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO documents (path, mtime, size, status, error)
+            VALUES (%s, %s, %s, 'skipped', %s)
+            ON CONFLICT (path) DO UPDATE
+               SET mtime = EXCLUDED.mtime, size = EXCLUDED.size,
+                   status = 'skipped', error = EXCLUDED.error
+            """,
+            (rel, st.st_mtime, st.st_size, reason),
+        )
+
+
+def _replace_chunks(doc_id: int, pieces: list[str], cfg: dict, client: httpx.Client) -> None:
+    embed_model = str(cfg["embed_model"])
+    with db.cursor() as cur:
+        cur.execute("DELETE FROM chunks WHERE document_id = %s", (doc_id,))
+
+    for start in range(0, len(pieces), EMBED_BATCH):
+        batch = pieces[start:start + EMBED_BATCH]
+        vectors = ollama.embed_sync(batch, embed_model, client=client)
+        if len(vectors) != len(batch):
+            raise ollama.OllamaError(
+                f"임베딩 개수 불일치: {len(vectors)} != {len(batch)}"
+            )
+        with db.cursor() as cur:
+            for i, (content, vec) in enumerate(zip(batch, vectors)):
+                cur.execute(
+                    """
+                    INSERT INTO chunks (document_id, ord, content, token_est, embedding)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (document_id, ord) DO UPDATE
+                       SET content = EXCLUDED.content, embedding = EXCLUDED.embedding
+                    """,
+                    (doc_id, start + i, content, chunker.token_est(content), vec),
+                )
+
+
+def _build_graph(doc_id: int, cfg: dict, client: httpx.Client) -> None:
+    model = str(cfg["extract_model"])
+    num_ctx = int(cfg["num_ctx"])
+    embed_model = str(cfg["embed_model"])
+
+    with db.cursor(commit=False) as cur:
+        cur.execute(
+            "SELECT id, content FROM chunks WHERE document_id = %s ORDER BY ord", (doc_id,)
+        )
+        rows = cur.fetchall()
+
+    for row in rows:
+        try:
+            entities, relations = graph.extract_graph(
+                row["content"], model, num_ctx=num_ctx, client=client
+            )
+        except ollama.OllamaError as exc:
+            log.warning("엔티티 추출 실패 (청크 %s): %s", row["id"], exc)
+            continue
+        if not entities:
+            continue
+
+        texts = [f"{e['name']}: {e['description']}".strip(": ") for e in entities]
+        vectors = ollama.embed_sync(texts, embed_model, client=client)
+        embeddings = {e["name_norm"]: v for e, v in zip(entities, vectors)}
+
+        ids = graph.merge_entities(entities, embeddings)
+        graph.merge_relations(relations, ids)
+        graph.link_chunk(row["id"], list(ids.values()))
+
+    graph.refresh_degrees()
+
+
+def delete_document(rel: str) -> int:
+    """문서 또는 폴더 하위 문서 전체를 인덱스에서 제거."""
+    rel = paths.normalize(rel)
+    with db.cursor() as cur:
+        cur.execute(
+            "DELETE FROM documents WHERE path = %s OR path LIKE %s RETURNING id",
+            (rel, rel + "/%"),
+        )
+        n = len(cur.fetchall())
+    if n:
+        graph.prune_orphans()
+        graph.refresh_degrees()
+    return n
+
+
+# ─────────────────────────── 스캔 ───────────────────────────
+# macOS 호스트의 bind mount 에서는 inotify 가 컨테이너로 전달되지 않는다.
+# 그래서 파일 감시는 주기적인 DB 대조 스캔으로 처리한다.
+
+
+def scan(cfg: dict, *, force: bool = False) -> dict:
+    """감시 폴더를 훑어 새 파일/변경/삭제를 잡으로 큐잉한다."""
+    watch = [paths.normalize(w) for w in (cfg["rag_watch_dirs"] or [])]
+    hidden = flags.hidden_paths()
+    locked = set(flags.locked_paths()) if not cfg["rag_index_locked_files"] else set()
+
+    on_disk: dict[str, tuple[float, int]] = {}
+    for wdir in watch:
+        base = env.nas_root / wdir if wdir else env.nas_root
+        if not base.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(base):
+            rel_dir = paths.to_rel(Path(dirpath))
+            if rel_dir == ".":  # NAS 루트 자신
+                rel_dir = ""
+            dirnames[:] = [
+                d for d in dirnames
+                if not any(paths.is_under(f"{rel_dir}/{d}".lstrip("/"), h) for h in hidden)
+            ]
+            for name in filenames:
+                if Path(name).suffix.lower() not in INDEXABLE_EXTS:
+                    continue
+                rel = f"{rel_dir}/{name}".lstrip("/")
+                if rel in locked or any(paths.is_under(rel, h) for h in hidden):
+                    continue
+                try:
+                    st = (Path(dirpath) / name).stat()
+                except OSError:
+                    continue
+                on_disk[rel] = (st.st_mtime, st.st_size)
+
+    with db.cursor(commit=False) as cur:
+        cur.execute("SELECT path, mtime, size, status FROM documents")
+        known = {r["path"]: r for r in cur.fetchall()}
+
+    queued = removed = 0
+    for rel, (mtime, size) in on_disk.items():
+        row = known.get(rel)
+        changed = (
+            row is None
+            or row["status"] in ("pending", "error")
+            or abs((row["mtime"] or 0) - mtime) > 1e-6
+            or (row["size"] or -1) != size
+        )
+        if force or changed:
+            if jobs.enqueue_index(rel) is not None:
+                queued += 1
+
+    for rel in known.keys() - on_disk.keys():
+        if jobs.enqueue_delete(rel) is not None:
+            removed += 1
+
+    return {"seen": len(on_disk), "queued": queued, "removed": removed}
