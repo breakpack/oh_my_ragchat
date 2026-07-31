@@ -709,6 +709,17 @@ a.badge:hover { text-decoration: none; border-color: var(--primary); color: var(
   min-width: 90px;
 }
 .bar-fill { height: 100%; background: var(--primary); border-radius: var(--r-full); }
+.bar-fill.err { background: var(--red); }
+
+.uploads .up-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-12);
+  padding: var(--sp-md) 0;
+  border-top: 1px solid var(--border);
+}
+.uploads .up-row .nm { width: 220px; flex: none; font-size: var(--caption-lg-size); }
+.uploads .up-row .up-pct { width: 84px; flex: none; text-align: right; }
 .live {
   display: inline-flex; align-items: center; gap: var(--sp-sm);
   font-size: var(--caption-lg-size); font-weight: 600; color: var(--n-600);

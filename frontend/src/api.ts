@@ -37,7 +37,47 @@ export const api = {
     request<T>(path, { method: 'PATCH', body: body === undefined ? undefined : JSON.stringify(body) }),
   del: <T,>(path: string, body?: unknown) =>
     request<T>(path, { method: 'DELETE', body: body === undefined ? undefined : JSON.stringify(body) }),
-  upload: <T,>(path: string, form: FormData) => request<T>(path, { method: 'POST', body: form }),
+}
+
+/** 업로드 진행률이 필요할 때. fetch 는 요청 본문 진행률을 주지 않아 XHR 을 쓴다. */
+export function uploadWithProgress<T>(
+  path: string,
+  form: FormData,
+  onProgress: (loaded: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', path)
+    xhr.withCredentials = true
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(e.loaded, e.total)
+    }
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(xhr.responseText ? JSON.parse(xhr.responseText) : (undefined as T))
+        } catch {
+          reject(new ApiError(xhr.status, '응답을 해석할 수 없습니다'))
+        }
+        return
+      }
+      let detail = `${xhr.status} ${xhr.statusText}`
+      try {
+        const body = JSON.parse(xhr.responseText)
+        if (body?.detail) detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
+      } catch { /* 본문이 JSON 이 아니면 상태줄을 그대로 쓴다 */ }
+      reject(new ApiError(xhr.status, detail))
+    }
+
+    xhr.onerror = () => reject(new ApiError(0, '네트워크 오류로 업로드하지 못했습니다'))
+    xhr.onabort = () => reject(new ApiError(0, '업로드를 취소했습니다'))
+
+    signal?.addEventListener('abort', () => xhr.abort(), { once: true })
+    xhr.send(form)
+  })
 }
 
 // ─────────────────────────── SSE ───────────────────────────

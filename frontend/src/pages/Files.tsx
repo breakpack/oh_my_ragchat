@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { api, fmtSize, fmtTime, type FileItem, type Preview } from '../api'
+import { api, fmtSize, fmtTime, uploadWithProgress, type FileItem, type Preview } from '../api'
 import { Field, Modal, Toggle, useRun, useToast } from '../ui'
+
+/** 업로드 중인 파일 하나의 상태. 파일별 진행률을 받으려고 한 건씩 순차 전송한다. */
+interface Upload {
+  name: string
+  size: number
+  loaded: number
+  status: 'pending' | 'uploading' | 'done' | 'error'
+  error?: string
+}
 
 const contentUrl = (path: string, download = false) =>
   `/api/files/content?path=${encodeURIComponent(path)}${download ? '&download=1' : ''}`
@@ -40,7 +49,8 @@ export default function Files() {
   const [text, setText] = useState('')
   const [password, setPassword] = useState('')
   const [over, setOver] = useState(false)
-  const [uploading, setUploading] = useState(false)
+  const [uploads, setUploads] = useState<Upload[]>([])
+  const abortRef = useRef<AbortController | null>(null)
   const [trashOpen, setTrashOpen] = useState(false)
   const [preview, setPreview] = useState<Preview | null>(null)
   const [previewBusy, setPreviewBusy] = useState(false)
@@ -64,16 +74,44 @@ export default function Files() {
   const go = (p: string) => setPath(p)
 
   const upload = async (files: FileList | File[]) => {
-    const form = new FormData()
-    form.append('path', path)
-    Array.from(files).forEach((f) => form.append('files', f))
-    setUploading(true)
-    const r = await run(() => api.upload<{ saved: any[] }>('/api/files/upload', form))
-    setUploading(false)
-    if (r) {
-      toast(`${r.saved.length}개 업로드 완료`)
-      load()
+    const list = Array.from(files)
+    if (!list.length) return
+
+    setUploads(list.map((f) => ({ name: f.name, size: f.size, loaded: 0, status: 'pending' })))
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+
+    const patch = (i: number, u: Partial<Upload>) =>
+      setUploads((prev) => prev.map((x, j) => (j === i ? { ...x, ...u } : x)))
+
+    let ok = 0
+    for (let i = 0; i < list.length; i++) {
+      if (ctrl.signal.aborted) {
+        patch(i, { status: 'error', error: '취소됨' })
+        continue
+      }
+      patch(i, { status: 'uploading' })
+
+      const form = new FormData()
+      form.append('path', path)
+      form.append('files', list[i])
+      try {
+        await uploadWithProgress(
+          '/api/files/upload',
+          form,
+          (loaded) => patch(i, { loaded }),
+          ctrl.signal,
+        )
+        patch(i, { status: 'done', loaded: list[i].size })
+        ok++
+      } catch (e: any) {
+        patch(i, { status: 'error', error: e?.message || String(e) })
+      }
     }
+
+    abortRef.current = null
+    if (ok) toast(`${ok}개 업로드 완료`)
+    load()
   }
 
   const del = async (item: FileItem) => {
@@ -136,6 +174,12 @@ export default function Files() {
     load()
   }
 
+  const busy = uploads.some((u) => u.status === 'pending' || u.status === 'uploading')
+  const done = uploads.filter((u) => u.status === 'done').length
+  const totalBytes = uploads.reduce((s, u) => s + u.size, 0)
+  const loaded = uploads.reduce((s, u) => s + (u.status === 'done' ? u.size : u.loaded), 0)
+  const overall = totalBytes ? Math.round((loaded / totalBytes) * 100) : 0
+
   return (
     <div
       className="page"
@@ -165,8 +209,8 @@ export default function Files() {
         <Toggle checked={showHidden} onChange={setShowHidden}>숨김 표시</Toggle>
         <button onClick={() => setTrashOpen(true)}>휴지통</button>
         <button onClick={() => { setText(''); setDialog({ kind: 'mkdir' }) }}>새 폴더</button>
-        <button className="primary" onClick={() => fileRef.current?.click()} disabled={uploading}>
-          {uploading ? '업로드 중…' : '업로드'}
+        <button className="primary" onClick={() => fileRef.current?.click()} disabled={busy}>
+          {busy ? '업로드 중…' : '업로드'}
         </button>
         <input
           ref={fileRef}
@@ -177,7 +221,54 @@ export default function Files() {
         />
       </header>
 
-      <div className={`drop${over ? ' over' : ''}`}>여기로 파일을 끌어다 놓으면 업로드됩니다</div>
+      {uploads.length > 0 ? (
+        <div className="card uploads">
+          <h3>
+            업로드
+            <span className="mute2">
+              {done}/{uploads.length} · {fmtSize(loaded)} / {fmtSize(totalBytes)}
+            </span>
+            <span className="right row">
+              <strong>{overall}%</strong>
+              {busy ? (
+                <button className="sm danger" onClick={() => abortRef.current?.abort()}>취소</button>
+              ) : (
+                <button className="sm" onClick={() => setUploads([])}>닫기</button>
+              )}
+            </span>
+          </h3>
+
+          <div className="bar-track" style={{ marginBottom: 12 }}>
+            <div className="bar-fill" style={{ width: `${overall}%` }} />
+          </div>
+
+          {uploads.map((u, i) => {
+            const pct = u.size ? Math.round((u.loaded / u.size) * 100) : u.status === 'done' ? 100 : 0
+            return (
+              <div className="up-row" key={`${u.name}-${i}`}>
+                <span className="nm truncate" title={u.name}>{u.name}</span>
+                <div className="bar-track grow">
+                  <div
+                    className={`bar-fill${u.status === 'error' ? ' err' : ''}`}
+                    style={{ width: `${u.status === 'error' ? 100 : pct}%` }}
+                  />
+                </div>
+                <span className="mute2 up-pct">
+                  {u.status === 'error'
+                    ? (u.error || '실패')
+                    : u.status === 'done'
+                      ? '완료'
+                      : u.status === 'pending'
+                        ? '대기'
+                        : `${pct}%`}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        <div className={`drop${over ? ' over' : ''}`}>여기로 파일을 끌어다 놓으면 업로드됩니다</div>
+      )}
 
       <div className="card flush files">
         <table>
