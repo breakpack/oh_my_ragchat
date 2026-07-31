@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, fmtTime, type Citation, type DocRow, type RagEvent } from '../api'
-import { useRun, useToast } from '../ui'
+import { Toggle, useRun, useToast } from '../ui'
+import GraphCanvas, { type GEdge, type GNode } from '../components/GraphCanvas'
 
 const STATUS: Record<string, { label: string; cls: string }> = {
   pending: { label: '대기', cls: '' },
@@ -332,128 +333,109 @@ function SearchTest() {
 function GraphView() {
   const run = useRun()
   const [entity, setEntity] = useState('')
-  const [data, setData] = useState<any>(null)
+  const [limit, setLimit] = useState(150)
+  const [depth, setDepth] = useState(1)
+  const [labels, setLabels] = useState(true)
+  const [data, setData] = useState<{ nodes: GNode[]; edges: GEdge[]; seed: string | null } | null>(null)
+  const [busy, setBusy] = useState(false)
 
   const load = useCallback(
-    async (name?: string) => {
+    async (name?: string, opts?: { limit?: number; depth?: number }) => {
+      setBusy(true)
+      const l = opts?.limit ?? limit
+      const d = opts?.depth ?? depth
       const r = await run(() =>
-        api.get<any>(`/api/rag/graph?depth=1&limit=60${name ? `&entity=${encodeURIComponent(name)}` : ''}`),
+        api.get<any>(
+          `/api/rag/graph?depth=${d}&limit=${l}${name ? `&entity=${encodeURIComponent(name)}` : ''}`,
+        ),
       )
+      setBusy(false)
       if (r) setData(r)
     },
-    [run],
+    [run, limit, depth],
   )
 
   useEffect(() => {
     load()
-  }, [load])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-  const nodes: any[] = data?.nodes ?? []
-  const edges: any[] = data?.edges ?? []
-
-  // 허브-스포크 배치 — 별도 그래프 라이브러리 없이 관계의 형태만 보여준다.
-  // 연결이 가장 많은 노드를 중앙에 두고 나머지를 hop 별 동심원에 올린다.
-  const W = 900
-  const H = 480
-  const pos: Record<number, { x: number; y: number }> = {}
-  const hub = [...nodes].sort((a, b) => (b.degree || 0) - (a.degree || 0))[0]
-
-  if (hub) {
-    pos[hub.id] = { x: W / 2, y: H / 2 }
-    const rings: Record<number, any[]> = {}
-    nodes.forEach((n) => {
-      if (n.id === hub.id) return
-      const ring = Math.max(1, n.hop || 1)
-      rings[ring] = [...(rings[ring] || []), n]
-    })
-    Object.entries(rings).forEach(([ring, list]) => {
-      const radius = 120 + (Number(ring) - 1) * 110
-      list.forEach((n, i) => {
-        const angle = (i / list.length) * Math.PI * 2 - Math.PI / 2
-        pos[n.id] = { x: W / 2 + Math.cos(angle) * radius, y: H / 2 + Math.sin(angle) * radius }
-      })
-    })
-  }
+  const nodes = data?.nodes ?? []
+  const edges = data?.edges ?? []
+  const focusId = useMemo(() => {
+    if (!entity) return null
+    const hit = nodes.find((n) => n.name === entity)
+    return hit?.id ?? null
+  }, [entity, nodes])
 
   return (
     <>
       <div className="card">
-        <div className="row">
+        <div className="row wrap">
           <input
             className="grow"
-            placeholder="엔티티 이름 (비우면 연결이 많은 노드)"
+            style={{ minWidth: 220 }}
+            placeholder="엔티티 이름 (비우면 연결이 많은 노드부터)"
             value={entity}
             onChange={(e) => setEntity(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && load(entity)}
           />
-          <button className="primary" onClick={() => load(entity)}>보기</button>
+          <select style={{ width: 120 }} value={depth} onChange={(e) => { const v = Number(e.target.value); setDepth(v); load(entity || undefined, { depth: v }) }}>
+            <option value={1}>1홉</option>
+            <option value={2}>2홉</option>
+          </select>
+          <select style={{ width: 130 }} value={limit} onChange={(e) => { const v = Number(e.target.value); setLimit(v); load(entity || undefined, { limit: v }) }}>
+            {[60, 150, 300, 600].map((v) => (
+              <option key={v} value={v}>{v}개</option>
+            ))}
+          </select>
+          <Toggle checked={labels} onChange={setLabels}>라벨</Toggle>
+          <button className="primary" onClick={() => load(entity)} disabled={busy}>
+            {busy ? '불러오는 중…' : '보기'}
+          </button>
+        </div>
+        <div className="mute2" style={{ marginTop: 8 }}>
+          휠로 확대·축소, 빈 곳을 끌어 이동, 노드를 끌어 배치, 더블클릭하면 그 노드를 중심으로 다시 봅니다.
         </div>
       </div>
 
       {!nodes.length ? (
-        <div className="empty">그래프가 비어 있습니다. 문서를 색인하면 엔티티가 생깁니다.</div>
+        <div className="empty">
+          {busy ? '불러오는 중…' : '그래프가 비어 있습니다. 문서를 색인하면 엔티티가 생깁니다.'}
+        </div>
       ) : (
         <>
-          <div className="card">
-            <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} role="img" aria-label="엔티티 관계 그래프">
-              {edges.map((e) => {
-                const a = pos[e.source]
-                const b = pos[e.target]
-                if (!a || !b) return null
-                return (
-                  <line
-                    key={e.id}
-                    x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-                    stroke="#e6e6e6"
-                    strokeWidth={Math.min(1 + e.weight, 4)}
-                  >
-                    <title>{e.description}</title>
-                  </line>
-                )
-              })}
-              {nodes.map((n) => {
-                const p = pos[n.id]
-                if (!p) return null
-                const isHub = n.id === hub?.id
-                const r = isHub ? 16 : Math.min(7 + (n.degree || 0) * 2, 14)
-                // 아래쪽 노드는 라벨을 아래에 둬서 중앙 노드와 겹치지 않게 한다
-                const below = p.y > H / 2 + 20
-                return (
-                  <g key={n.id} style={{ cursor: 'pointer' }} onClick={() => { setEntity(n.name); load(n.name) }}>
-                    <circle cx={p.x} cy={p.y} r={r} fill={isHub ? '#1d8bff' : '#49627a'}>
-                      <title>{n.description}</title>
-                    </circle>
-                    <text
-                      x={p.x}
-                      y={below ? p.y + r + 15 : p.y - r - 7}
-                      fill="#222222"
-                      fontSize={12}
-                      fontWeight={600}
-                      textAnchor="middle"
-                      stroke="#ffffff"
-                      strokeWidth={3}
-                      paintOrder="stroke"
-                    >
-                      {n.name.length > 12 ? `${n.name.slice(0, 11)}…` : n.name}
-                    </text>
-                  </g>
-                )
-              })}
-            </svg>
+          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+            <GraphCanvas
+              nodes={nodes}
+              edges={edges}
+              height={560}
+              focusId={focusId}
+              showLabels={labels}
+              onOpen={(n) => {
+                setEntity(n.name)
+                load(n.name)
+              }}
+            />
+          </div>
+
+          <div className="row wrap mute2" style={{ margin: '0 0 12px' }}>
+            <span>노드 {nodes.length}개 · 관계 {edges.length}개</span>
+            {data?.seed && <span className="badge on">중심: {data.seed}</span>}
           </div>
 
           <div className="card flush">
             <table>
               <thead>
                 <tr>
-                  <th style={{ width: 180 }}>엔티티</th>
+                  <th style={{ width: 200 }}>엔티티</th>
                   <th style={{ width: 80 }}>유형</th>
                   <th style={{ width: 60 }}>연결</th>
                   <th>설명</th>
                 </tr>
               </thead>
               <tbody>
-                {nodes.map((n) => (
+                {[...nodes].sort((a, b) => (b.degree || 0) - (a.degree || 0)).slice(0, 30).map((n) => (
                   <tr key={n.id} style={{ cursor: 'pointer' }} onClick={() => { setEntity(n.name); load(n.name) }}>
                     <td>{n.name}</td>
                     <td className="mute2">{n.type}</td>

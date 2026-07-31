@@ -726,6 +726,46 @@ a.badge:hover { text-decoration: none; border-color: var(--primary); color: var(
   font-size: var(--caption-lg-size); font-weight: 600; color: var(--n-600);
 }
 
+/* ============================= 그래프 =============================== */
+
+.graph-canvas {
+  position: relative;
+  background:
+    radial-gradient(circle at 1px 1px, #eef0f3 1px, transparent 0) 0 0 / 22px 22px,
+    var(--canvas);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+.graph-canvas canvas:active { cursor: grabbing; }
+
+.graph-tip {
+  position: absolute;
+  left: var(--sp-12);
+  bottom: var(--sp-12);
+  max-width: 360px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-md);
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-raised);
+  padding: var(--sp-md) var(--sp-12);
+  pointer-events: none;
+}
+.graph-tip .desc { flex-basis: 100%; }
+
+.graph-actions {
+  position: absolute;
+  right: var(--sp-12);
+  top: var(--sp-12);
+  display: flex;
+  gap: var(--sp-md);
+}
+
 /* ============================== 기타 ================================ */
 
 .stat-value { font-size: var(--display-md-size); line-height: var(--display-md-lh); font-weight: 700; }

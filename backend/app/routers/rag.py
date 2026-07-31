@@ -171,7 +171,7 @@ async def search(
 async def graph_view(
     entity: str | None = Query(None),
     depth: int = Query(1, ge=1, le=2),
-    limit: int = Query(60, ge=1, le=300),
+    limit: int = Query(150, ge=1, le=800),
 ) -> dict:
     """엔티티 이웃 그래프. entity 를 안 주면 degree 상위 노드를 보여준다."""
     return await anyio.to_thread.run_sync(_graph_sync, entity, depth, limit)
