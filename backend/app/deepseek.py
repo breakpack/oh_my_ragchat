@@ -12,8 +12,9 @@ import logging
 import os
 import threading
 import time
-from typing import Any
+from typing import Any, AsyncIterator
 
+import anyio
 import httpx
 
 from . import db
@@ -229,14 +230,162 @@ def chat_json(
         record_usage(model, usage)
 
     try:
-        content = body["choices"][0]["message"]["content"]
+        choice = body["choices"][0]
+        content = choice["message"]["content"]
     except (KeyError, IndexError) as exc:
         raise DeepSeekError(f"예상과 다른 응답 형식: {str(body)[:200]}") from exc
 
     try:
         return json.loads(content), usage
-    except json.JSONDecodeError as exc:
-        raise DeepSeekError(f"JSON 파싱 실패: {content[:200]}") from exc
+    except json.JSONDecodeError:
+        pass
+
+    # max_tokens 에 걸려 JSON 이 중간에서 끊긴 경우가 대부분이다.
+    # 통째로 버리면 로컬 모델로 되돌아가 수십 초를 쓰므로, 완결된 부분만 건져 쓴다.
+    salvaged = salvage_json(content)
+    if salvaged is not None:
+        log.warning(
+            "응답이 잘려 부분 복구했습니다 (finish_reason=%s, %d자). "
+            "deepseek_max_output_tokens 를 올리면 사라집니다.",
+            choice.get("finish_reason"), len(content),
+        )
+        return salvaged, usage
+
+    raise DeepSeekError(
+        f"JSON 파싱 실패 (finish_reason={choice.get('finish_reason')}): {content[:160]}"
+    )
+
+
+def salvage_json(text: str) -> dict | None:
+    """잘린 JSON 에서 완결된 부분만 되살린다. 못 살리면 None."""
+    if not text or "{" not in text:
+        return None
+
+    depth = 0
+    in_str = False
+    esc = False
+    stack: list[str] = []
+    # 배열 원소(객체) 하나가 온전히 닫힌 마지막 위치
+    cut = -1
+    cut_stack: list[str] = []
+
+    for i, ch in enumerate(text):
+        if esc:
+            esc = False
+            continue
+        if in_str:
+            if ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+            depth += 1
+        elif ch in "}]":
+            if not stack:
+                return None
+            stack.pop()
+            depth -= 1
+            if depth >= 1:  # 최상위가 아직 안 닫혔다 = 원소 하나가 끝난 지점
+                cut, cut_stack = i, list(stack)
+
+    if cut < 0:
+        return None
+
+    repaired = text[: cut + 1] + "".join(reversed(cut_stack))
+    try:
+        data = json.loads(repaired)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+# ─────────────────────────── 채팅 스트리밍 (async) ───────────────────────────
+# 채팅 모델 이름은 Ollama 모델과 구분하려고 'deepseek/' 를 붙여서 다룬다.
+
+MODEL_PREFIX = "deepseek/"
+
+# 공개 모델 목록은 API 로 조회할 수 없어 상수로 둔다.
+CHAT_MODELS = [
+    {"id": "deepseek-chat", "label": "DeepSeek Chat (V3)", "thinking": False},
+    {"id": "deepseek-reasoner", "label": "DeepSeek Reasoner (R1)", "thinking": True},
+]
+
+
+def is_deepseek_model(model: str | None) -> bool:
+    return bool(model) and str(model).startswith(MODEL_PREFIX)
+
+
+def strip_prefix(model: str) -> str:
+    return model[len(MODEL_PREFIX):] if is_deepseek_model(model) else model
+
+
+async def chat_stream(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    temperature: float = 0.7,
+    max_tokens: int | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """OpenAI 호환 SSE 스트림을 ollama.chat_stream 과 같은 모양으로 흘린다."""
+    key = api_key()
+    if not key:
+        raise DeepSeekError("DeepSeek API 키가 설정되지 않았습니다")
+
+    # vision 을 지원하지 않으므로 이미지는 보내지 않는다 (첨부 이미지는 OCR 텍스트로 들어간다)
+    clean = [{k: v for k, v in m.items() if k != "images"} for m in messages]
+
+    payload: dict[str, Any] = {
+        "model": strip_prefix(model),
+        "messages": clean,
+        "stream": True,
+        "temperature": temperature,
+        "stream_options": {"include_usage": True},
+    }
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
+
+    usage: dict[str, Any] = {}
+    timeout = httpx.Timeout(connect=15, read=None, write=30, pool=15)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream(
+            "POST",
+            f"{base_url()}/chat/completions",
+            json=payload,
+            headers={"Authorization": f"Bearer {key}"},
+        ) as r:
+            if r.status_code >= 400:
+                body = (await r.aread()).decode(errors="replace")[:400]
+                raise DeepSeekError(f"HTTP {r.status_code}: {body}")
+
+            async for line in r.aiter_lines():
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+
+                if obj.get("usage"):
+                    usage = obj["usage"]
+
+                for choice in obj.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content") or ""
+                    thinking = delta.get("reasoning_content") or ""
+                    done = bool(choice.get("finish_reason"))
+                    if content or thinking or done:
+                        yield {"content": content, "thinking": thinking, "done": done}
+
+    if usage:
+        await anyio.to_thread.run_sync(record_usage, strip_prefix(model), usage)
 
 
 def ping(model: str = "deepseek-chat") -> dict[str, Any]:

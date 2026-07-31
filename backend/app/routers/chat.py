@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .. import db, deps, ollama, paths, security
+from .. import db, deepseek, deps, ollama, paths, security
 from ..config import IMAGE_EXTS, RAG_MODES, env
 from ..rag import extract as extractor
 from ..rag.retrieve import retrieve
@@ -221,6 +221,11 @@ async def send(session_id: int, body: MessageIn, cfg: deps.Settings) -> Streamin
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"rag_mode 는 {RAG_MODES} 중 하나")
 
     model = body.model or session["model"] or (persona or {}).get("model") or cfg["chat_model"]
+    if deepseek.is_deepseek_model(model) and not deepseek.configured():
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="DeepSeek 모델을 쓰려면 설정에서 API 키를 먼저 입력하세요",
+        )
     temperature = body.temperature
     if temperature is None:
         temperature = (persona or {}).get("temperature")
@@ -277,12 +282,19 @@ async def send(session_id: int, body: MessageIn, cfg: deps.Settings) -> Streamin
                 user_msg["images"] = images
             messages.append(user_msg)
 
-            async for chunk in ollama.chat_stream(
-                model,
-                messages,
-                temperature=float(temperature),
-                num_ctx=int(cfg["num_ctx"]),
-            ):
+            if deepseek.is_deepseek_model(model):
+                source = deepseek.chat_stream(
+                    model, messages, temperature=float(temperature)
+                )
+            else:
+                source = ollama.chat_stream(
+                    model,
+                    messages,
+                    temperature=float(temperature),
+                    num_ctx=int(cfg["num_ctx"]),
+                )
+
+            async for chunk in source:
                 if session_id in _stopped:
                     _stopped.discard(session_id)
                     yield _sse("done", {"stopped": True})

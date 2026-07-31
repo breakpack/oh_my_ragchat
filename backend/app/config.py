@@ -65,7 +65,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "deepseek_base_url": "https://api.deepseek.com",  # 환경변수가 있으면 그쪽이 우선
     "deepseek_concurrency": 4,  # 청크를 동시에 몇 개씩 보낼지
     "deepseek_max_input_chars": 4000,  # 청크를 이 길이로 잘라 보낸다
-    "deepseek_max_output_tokens": 900,
+    # 출력 상한. 실제로 생성한 만큼만 과금되므로 넉넉히 잡아도 비용은 늘지 않는다.
+    # 오히려 낮게 잡으면 JSON 이 중간에 잘려 결과를 통째로 버리게 된다.
+    "deepseek_max_output_tokens": 3000,
     "deepseek_token_budget": 3_000_000,  # 누적 상한. 넘으면 로컬로 되돌린다 (0=무제한)
     "rag_use_keyword": True,  # 벡터 검색과 별개로 본문 키워드(trgm) 매칭을 병행
     "rag_top_k_keyword": 6,

@@ -158,6 +158,10 @@ secrets(key, value, updated_at)                -- API 키. app_settings 와 분�
 - 페르소나: `system_prompt` + 모델 + temperature 묶음. 세션 생성 시 선택.
 - 프롬프트 우선순위: 페르소나 system prompt → RAG 컨텍스트 지시문 → 대화 히스토리.
 - 히스토리는 최근 N 턴(설정값, 기본 12턴)만 전송.
+- **모델 선택**: Ollama 모델과 DeepSeek 모델을 같은 목록에서 고른다. DeepSeek 은 이름 앞에
+  `deepseek/` 를 붙여 구분하고(`deepseek/deepseek-chat`), 라우터가 그 접두어를 보고
+  스트리밍 경로를 나눈다. `deepseek-reasoner` 의 `reasoning_content` 는 thinking 이벤트로
+  매핑한다. DeepSeek 은 vision 이 없으므로 첨부 이미지는 보내지 않고 OCR 텍스트만 넘긴다.
 - **첨부**: NAS 경로 또는 브라우저 업로드(base64) 둘 다 받는다. 이미지는 Ollama 메시지의
   `images` 필드로, 그 외는 추출한 본문을 프롬프트에 인라인한다.
   이미지는 **OCR 결과도 함께** 넘긴다 — `vision` 능력을 광고하면서 실제로는 이미지를

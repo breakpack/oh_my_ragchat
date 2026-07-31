@@ -17,7 +17,8 @@
   토큰 상한 + 누적 예산으로 비용을 묶고, 예산을 넘기면 자동으로 로컬 모델로 되돌아간다
 - **실시간 인덱싱 진행률** — 워커가 Postgres NOTIFY 로 밀어주는 진행률을 SSE 로 화면에 표시
 - **채팅** — SSE 스트리밍, 페르소나(시스템 프롬프트+모델+temperature), 세션별 RAG 토글,
-  thinking 모델 사고 과정 표시, **이미지·문서 첨부**
+  thinking 모델 사고 과정 표시, **이미지·문서 첨부**.
+  모델은 로컬(Ollama)과 **DeepSeek API**(`deepseek-chat` / `deepseek-reasoner`) 중에 고른다
 - **숨김 폴더** — 목록에서 제외되고 하위로 상속. RAG 색인에서도 빠진다
 - **파일 잠금** — 열람 시 비밀번호 요구(`423`). 해제는 N분간 유지
 - **설정 페이지** — 연결·모델·RAG·NAS·보안·페르소나 6개 탭
@@ -97,6 +98,23 @@ make clean     # 볼륨까지 삭제 (DB 초기화, NAS 파일은 유지)
 토큰을 아끼려고 기본값이 이미 보수적으로 잡혀 있다 — 청크 입력 4000자, 출력 900토큰,
 엔티티/관계 각 12개, 누적 예산 300만 토큰. **예산을 넘으면 자동으로 로컬 모델로 되돌아가고**,
 호출이 실패한 청크도 로컬로 대체 처리한다. 누적/오늘 사용량과 예산 잔여는 같은 화면에서 볼 수 있다.
+- **리버스 프록시를 앞에 둔다면 SSE 설정이 필요하다.** nginx 는 기본값이 업스트림 HTTP/1.0 +
+  응답 버퍼링이라 스트리밍이 막힌다. 채팅 응답이 한 번에 나오거나 지식 페이지가
+  "30초 갱신"에서 안 돌아오면 이것이다. nginx-proxy-manager 라면 해당 프록시 호스트의
+  **Advanced** 탭에 아래를 넣는다.
+
+  ```nginx
+  location / {
+      proxy_pass       $forward_scheme://$server:$port;
+      proxy_http_version 1.1;
+      proxy_set_header Connection '';
+      proxy_set_header Host $host;
+      proxy_buffering  off;
+      proxy_cache      off;
+      proxy_read_timeout 1h;
+  }
+  ```
+
 - **파일 감시는 폴링이다.** macOS bind mount 로는 inotify 가 컨테이너까지 오지 않아
   30초 주기 대조 스캔을 쓴다(`RAG_SCAN_SECONDS`). API 를 통한 업로드/삭제는 즉시 반영된다.
 - **채팅 이미지 첨부는 OCR 을 함께 넘긴다.** Ollama 가 `vision` 능력을 광고해도 실제로는

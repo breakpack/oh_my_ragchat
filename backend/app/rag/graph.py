@@ -72,7 +72,7 @@ DEEPSEEK_SYSTEM = (
     '{{"entities":[{{"name":"","type":"사람|조직|장소|제품|기술|개념|사건|날짜|기타",'
     '"description":""}}],'
     '"relations":[{{"source":"","target":"","description":"","keywords":"","weight":0.5}}]}}\n'
-    "규칙: 텍스트에 실제 등장하는 것만. 설명은 한국어 한 문장. "
+    "규칙: 텍스트에 실제 등장하는 것만. 설명은 한국어로 40자 이내. "
     "엔티티 최대 {max_e}개, 관계 최대 {max_r}개. 없으면 빈 배열."
 )
 
@@ -242,13 +242,21 @@ def merge_relations(relations: list[dict], ids: dict[str, int]) -> int:
 
 
 def link_chunk(chunk_id: int, entity_ids: list[int]) -> None:
+    """청크 ↔ 엔티티 연결.
+
+    재색인이 겹치면 이 청크가 이미 지워졌을 수 있다. 그때 FK 위반으로 문서 전체
+    인덱싱이 실패했었기 때문에, 청크가 남아 있을 때만 넣도록 EXISTS 로 감싼다.
+    """
     if not entity_ids:
         return
     with db.cursor() as cur:
         cur.executemany(
-            "INSERT INTO chunk_entities (chunk_id, entity_id) VALUES (%s, %s) "
-            "ON CONFLICT DO NOTHING",
-            [(chunk_id, eid) for eid in entity_ids],
+            """
+            INSERT INTO chunk_entities (chunk_id, entity_id)
+            SELECT %s, %s WHERE EXISTS (SELECT 1 FROM chunks WHERE id = %s)
+            ON CONFLICT DO NOTHING
+            """,
+            [(chunk_id, eid, chunk_id) for eid in entity_ids],
         )
 
 

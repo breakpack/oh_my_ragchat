@@ -17,6 +17,37 @@ import { Modal, Toggle, useRun, useToast } from '../ui'
 
 const IMAGE_RE = /\.(png|jpe?g|webp|bmp|tiff?|gif)$/i
 
+export interface ModelOpt {
+  name: string
+  embedding?: boolean
+  remote?: boolean
+  label?: string
+}
+
+/** 로컬(Ollama) / 원격(DeepSeek) 을 optgroup 으로 나눠 보여준다. */
+function ModelOptions({ models }: { models: ModelOpt[] }) {
+  const local = models.filter((m) => !m.remote)
+  const remote = models.filter((m) => m.remote)
+  return (
+    <>
+      {!!local.length && (
+        <optgroup label="로컬 (Ollama)">
+          {local.map((m) => (
+            <option key={m.name} value={m.name}>{m.name}</option>
+          ))}
+        </optgroup>
+      )}
+      {!!remote.length && (
+        <optgroup label="DeepSeek API">
+          {remote.map((m) => (
+            <option key={m.name} value={m.name}>{m.label || m.name}</option>
+          ))}
+        </optgroup>
+      )}
+    </>
+  )
+}
+
 /** 첨부 대기 항목. data 는 base64(접두어 제거), preview 는 화면 표시용 data URL. */
 interface Pending {
   name: string
@@ -58,7 +89,7 @@ export default function Chat() {
 
   const [sessions, setSessions] = useState<Session[]>([])
   const [personas, setPersonas] = useState<Persona[]>([])
-  const [models, setModels] = useState<string[]>([])
+  const [models, setModels] = useState<ModelOpt[]>([])
   const [session, setSession] = useState<Session | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -87,8 +118,8 @@ export default function Chat() {
       const p = await run(() => api.get<{ personas: Persona[] }>('/api/personas'))
       if (p) setPersonas(p.personas)
       try {
-        const m = await api.get<{ models: { name: string; embedding: boolean }[] }>('/api/settings/models')
-        setModels(m.models.filter((x) => !x.embedding).map((x) => x.name))
+        const m = await api.get<{ models: ModelOpt[] }>('/api/settings/models')
+        setModels(m.models.filter((x) => !x.embedding))
       } catch {
         /* Ollama 가 꺼져 있어도 채팅 화면은 열려야 한다 */
       }
@@ -307,9 +338,7 @@ export default function Chat() {
                 onChange={(e) => patchSession({ model: e.target.value || null })}
               >
                 <option value="">기본 모델</option>
-                {models.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
+                <ModelOptions models={models} />
               </select>
             </div>
 
@@ -521,7 +550,7 @@ function NewSessionModal({
   onCreate,
 }: {
   personas: Persona[]
-  models: string[]
+  models: ModelOpt[]
   onClose: () => void
   onCreate: (body: Partial<Session>) => void
 }) {
@@ -563,9 +592,7 @@ function NewSessionModal({
         <label>모델</label>
         <select value={model} onChange={(e) => setModel(e.target.value)}>
           <option value="">기본 모델</option>
-          {models.map((m) => (
-            <option key={m} value={m}>{m}</option>
-          ))}
+          <ModelOptions models={models} />
         </select>
       </div>
       <div className="row" style={{ marginTop: 4 }}>

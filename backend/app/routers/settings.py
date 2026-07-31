@@ -142,6 +142,21 @@ async def models() -> dict:
             "thinking": "thinking" in caps,
         })
     items.sort(key=lambda x: x["name"] or "")
+
+    # DeepSeek 채팅 모델도 같은 목록에 실어 준다. 이름 앞에 deepseek/ 를 붙여 구분한다.
+    if deepseek.configured():
+        for m in deepseek.CHAT_MODELS:
+            items.append({
+                "name": f"{deepseek.MODEL_PREFIX}{m['id']}",
+                "size": None,
+                "family": "deepseek",
+                "parameter_size": None,
+                "capabilities": ["completion"] + (["thinking"] if m["thinking"] else []),
+                "embedding": False,
+                "thinking": m["thinking"],
+                "remote": True,
+                "label": m["label"],
+            })
     return {"models": items}
 
 
