@@ -70,6 +70,7 @@ relations(id, src_id, tgt_id, description, keywords, weight)
 chunk_entities(chunk_id, entity_id)            -- 청크 ↔ 엔티티 역인덱스
 jobs(id, kind, payload jsonb, status, attempts, error, created_at, started_at, done_at)
 llm_usage(id, provider, model, prompt_tokens, completion_tokens, cached_tokens, created_at)
+secrets(key, value, updated_at)                -- API 키. app_settings 와 분리 (아래 5-5 참고)
 ```
 
 - 벡터 인덱스: `chunks.embedding`, `entities.embedding` 에 HNSW (`vector_cosine_ops`).
@@ -112,8 +113,11 @@ llm_usage(id, provider, model, prompt_tokens, completion_tokens, cached_tokens, 
      `deepseek_max_output_tokens`(900)과 엔티티/관계 개수 상한으로 묶는다. 응답의
      `usage` 를 `llm_usage` 에 적재하고 `deepseek_token_budget` 누적 상한을 넘으면
      **자동으로 로컬로 되돌아간다**. 개별 호출이 실패해도 그 청크만 로컬로 대체한다.
-   - **키 보관**: `DEEPSEEK_API_KEY` 는 `.env`(환경변수)에만 둔다. 설정 API 로 새어나가지
-     않도록 `app_settings` 에 저장하지 않는다.
+   - **키 보관**: 웹(설정 화면)에서 입력하면 `secrets` 테이블에 저장한다. `app_settings`
+     에 두지 않는 이유는 `GET /api/settings` 가 설정을 통째로 내려주기 때문이다 — 같이
+     두면 설정 화면을 여는 것만으로 키가 브라우저까지 나간다. 조회 API 는 마스킹된 값만
+     주고 원문 반환 경로는 없다. `DEEPSEEK_API_KEY` 환경변수가 있으면 그쪽이 우선하며
+     이때 웹 변경은 400 으로 거부한다.
    - **DB 병합은 항상 메인 스레드에서 순차로** 한다. 추출만 병렬이고, 엔티티 upsert 를
      동시에 돌리면 교착이 날 수 있어서다.
 6. **머지** — 엔티티는 정규화된 이름(`lower`+공백정리)으로 upsert, description 을

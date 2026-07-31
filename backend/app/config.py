@@ -62,6 +62,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "extract_max_entities": 12,  # 출력 토큰을 묶는 상한 (두 제공자 공통)
     "extract_max_relations": 12,
     "deepseek_model": "deepseek-chat",
+    "deepseek_base_url": "https://api.deepseek.com",  # 환경변수가 있으면 그쪽이 우선
     "deepseek_concurrency": 4,  # 청크를 동시에 몇 개씩 보낼지
     "deepseek_max_input_chars": 4000,  # 청크를 이 길이로 잘라 보낸다
     "deepseek_max_output_tokens": 900,

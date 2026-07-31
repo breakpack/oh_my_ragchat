@@ -378,7 +378,10 @@ interface ProviderInfo {
   options: string[]
   deepseek: {
     configured: boolean
+    key_source: 'env' | 'db' | ''
+    key_masked: string
     base_url: string
+    base_url_from_env: boolean
     model: string
     budget: number
     budget_left: number | null
@@ -455,20 +458,13 @@ function ExtractProviderCard({
         </Field>
       </div>
 
-      {!ds?.configured && (
-        <div className="mute2" style={{ marginTop: 4 }}>
-          DeepSeek 를 쓰려면 <code>.env</code> 에 <code>DEEPSEEK_API_KEY=…</code> 를 넣고
-          <code> make restart </code>로 재시작하세요. 키는 DB 에 저장하지 않습니다.
-        </div>
-      )}
+      {ds && <DeepSeekKey ds={ds} onChange={load} />}
 
       {ds?.configured && (
         <>
           <div className="row wrap" style={{ margin: '4px 0 12px' }}>
-            <span className="badge ok">키 설정됨</span>
-            <span className="mute2">{ds.base_url}</span>
             <button
-              className="sm right"
+              className="sm"
               disabled={testing}
               onClick={async () => {
                 setTesting(true)
@@ -482,9 +478,20 @@ function ExtractProviderCard({
             >
               {testing ? '확인 중…' : '연결 테스트'}
             </button>
+            <span className="mute2">키가 실제로 동작하는지 최소 토큰으로 확인합니다</span>
           </div>
 
           <div className="grid2">
+            <Field
+              label="Base URL"
+              hint={ds.base_url_from_env ? '.env 가 우선 적용 중 (수정 불가)' : undefined}
+            >
+              <input
+                value={ds.base_url_from_env ? ds.base_url : (val('deepseek_base_url') ?? '')}
+                disabled={ds.base_url_from_env}
+                onChange={(e) => set('deepseek_base_url', e.target.value)}
+              />
+            </Field>
             <Field label="모델">
               <input
                 value={val('deepseek_model') ?? ''}
@@ -548,6 +555,97 @@ function ExtractProviderCard({
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+function DeepSeekKey({
+  ds,
+  onChange,
+}: {
+  ds: ProviderInfo['deepseek']
+  onChange: () => void
+}) {
+  const run = useRun()
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const save = async (key: string) => {
+    setBusy(true)
+    const ok = await run(
+      () => api.put('/api/settings/providers/deepseek/key', { key }),
+      key ? '키를 저장했습니다' : '키를 삭제했습니다',
+    )
+    setBusy(false)
+    if (ok) {
+      setDraft('')
+      onChange()
+    }
+  }
+
+  if (ds.key_source === 'env') {
+    return (
+      <div className="row wrap" style={{ margin: '4px 0 12px' }}>
+        <span className="badge ok">키 설정됨</span>
+        <span className="mono mute2">{ds.key_masked}</span>
+        <span className="badge">.env 로 지정됨 — 웹에서 변경 불가</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="field" style={{ marginTop: 4 }}>
+      <label>
+        API 키
+        <span className="mute2">
+          {' · '}
+          {ds.configured
+            ? '저장돼 있습니다. 바꾸려면 새 키를 입력하세요'
+            : 'platform.deepseek.com 에서 발급한 키를 붙여넣으세요'}
+        </span>
+      </label>
+
+      {ds.configured && (
+        <div className="row wrap" style={{ marginBottom: 8 }}>
+          <span className="badge ok">키 설정됨</span>
+          <span className="mono mute2">{ds.key_masked}</span>
+          <button
+            className="sm danger"
+            disabled={busy}
+            onClick={() => {
+              if (confirm('저장된 키를 삭제할까요? 추출 제공자는 로컬로 되돌아갑니다.')) save('')
+            }}
+          >
+            키 삭제
+          </button>
+        </div>
+      )}
+
+      <div className="row">
+        <input
+          className="grow"
+          type="password"
+          autoComplete="off"
+          placeholder="sk-..."
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && draft.trim()) {
+              e.preventDefault()
+              save(draft.trim())
+            }
+          }}
+        />
+        <button className="primary" disabled={busy || !draft.trim()} onClick={() => save(draft.trim())}>
+          {busy ? '저장 중…' : '저장'}
+        </button>
+      </div>
+
+      <div className="mute2" style={{ marginTop: 6 }}>
+        키는 이 서버의 DB 에 저장되고 조회 API 로는 절대 되돌려주지 않습니다(마스킹만).
+        평문으로 보관되므로 DB 백업을 공유할 때는 주의하세요. <code>.env</code> 에
+        <code> DEEPSEEK_API_KEY </code>를 두면 그쪽이 우선합니다.
+      </div>
     </div>
   )
 }

@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
 from typing import Any
 
 import httpx
@@ -18,16 +20,85 @@ from . import db
 
 log = logging.getLogger("chatchat.deepseek")
 
-BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+DEFAULT_BASE_URL = "https://api.deepseek.com"
+SECRET_NAME = "deepseek_api_key"
+
+# 청크마다 키를 조회하면 DB 왕복이 늘어난다. 짧게 캐시하고 저장 시 즉시 무효화한다.
+_CACHE_TTL = 30.0
+_cache: dict[str, Any] = {"value": None, "at": 0.0}
+_lock = threading.Lock()
 
 
 class DeepSeekError(RuntimeError):
     pass
 
 
+# ─────────────────────────── 키 / 엔드포인트 ───────────────────────────
+# 환경변수가 우선이다. .env 로 넣어둔 사람의 설정을 웹에서 덮어쓰지 않도록.
+
+
+def _db_key() -> str:
+    now = time.time()
+    with _lock:
+        if _cache["value"] is not None and now - _cache["at"] < _CACHE_TTL:
+            return _cache["value"]
+    try:
+        with db.cursor(commit=False) as cur:
+            cur.execute("SELECT value FROM secrets WHERE key = %s", (SECRET_NAME,))
+            row = cur.fetchone()
+        value = (row["value"] if row else "").strip()
+    except Exception as exc:  # noqa: BLE001 - 마이그레이션 전이면 테이블이 없을 수 있다
+        log.debug("secrets 조회 실패: %s", exc)
+        value = ""
+    with _lock:
+        _cache.update(value=value, at=now)
+    return value
+
+
+def set_key(value: str | None) -> None:
+    """웹에서 키 저장/삭제. 값은 어떤 API 로도 되돌려주지 않는다."""
+    value = (value or "").strip()
+    with db.cursor() as cur:
+        if value:
+            cur.execute(
+                """
+                INSERT INTO secrets (key, value, updated_at) VALUES (%s, %s, now())
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+                """,
+                (SECRET_NAME, value),
+            )
+        else:
+            cur.execute("DELETE FROM secrets WHERE key = %s", (SECRET_NAME,))
+    with _lock:
+        _cache.update(value=None, at=0.0)
+
+
 def api_key() -> str:
-    """키는 DB 설정이 아니라 환경변수에만 둔다 (설정 API 로 새어나가지 않게)."""
-    return os.getenv("DEEPSEEK_API_KEY", "").strip()
+    return os.getenv("DEEPSEEK_API_KEY", "").strip() or _db_key()
+
+
+def key_source() -> str:
+    """'env' | 'db' | '' — 어디서 온 키인지."""
+    if os.getenv("DEEPSEEK_API_KEY", "").strip():
+        return "env"
+    return "db" if _db_key() else ""
+
+
+def masked_key() -> str:
+    key = api_key()
+    if not key:
+        return ""
+    return f"{key[:5]}…{key[-4:]}" if len(key) > 12 else "…" * 4
+
+
+def base_url() -> str:
+    env_url = os.getenv("DEEPSEEK_BASE_URL", "").strip()
+    if env_url:
+        return env_url.rstrip("/")
+    try:
+        return str(db.get_setting("deepseek_base_url") or DEFAULT_BASE_URL).rstrip("/")
+    except Exception:  # noqa: BLE001
+        return DEFAULT_BASE_URL
 
 
 def configured() -> bool:
@@ -120,7 +191,7 @@ def chat_json(
     """JSON 모드로 한 번 호출. (파싱된 결과, usage) 를 돌려준다."""
     key = api_key()
     if not key:
-        raise DeepSeekError("DEEPSEEK_API_KEY 가 설정되지 않았습니다")
+        raise DeepSeekError("DeepSeek API 키가 설정되지 않았습니다")
 
     payload = {
         "model": model,
@@ -139,7 +210,7 @@ def chat_json(
     client = client or httpx.Client(timeout=timeout)
     try:
         r = client.post(
-            f"{BASE_URL}/chat/completions",
+            f"{base_url()}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {key}"},
             timeout=timeout,
@@ -170,7 +241,7 @@ def chat_json(
 
 def ping(model: str = "deepseek-chat") -> dict[str, Any]:
     if not configured():
-        return {"ok": False, "error": "DEEPSEEK_API_KEY 미설정"}
+        return {"ok": False, "error": "DeepSeek API 키 미설정"}
     try:
         data, usage = chat_json(
             'JSON 으로만 답한다. 형식: {"ok": true}',

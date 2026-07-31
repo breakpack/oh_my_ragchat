@@ -229,7 +229,7 @@ def pick_provider(cfg: dict) -> str:
     if provider != "deepseek":
         return "local"
     if not deepseek.configured():
-        log.warning("extract_provider=deepseek 이지만 DEEPSEEK_API_KEY 가 없어 로컬로 대체합니다")
+        log.warning("extract_provider=deepseek 이지만 API 키가 없어 로컬로 대체합니다")
         return "local"
     left = deepseek.budget_left(cfg)
     if left is not None and left <= 0:

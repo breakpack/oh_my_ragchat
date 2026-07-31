@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, status
+from pydantic import BaseModel
 
 from .. import db, deepseek, deps, flags, ollama, paths
 from ..config import DEFAULT_SETTINGS, EXTRACT_PROVIDERS, RAG_MODES
@@ -80,9 +82,7 @@ def _coerce(key: str, value: Any) -> Any:
             )
         if value == "deepseek" and not deepseek.configured():
             raise HTTPException(
-                400,
-                detail="DEEPSEEK_API_KEY 가 설정되지 않았습니다. .env 에 키를 넣고 "
-                       "make restart 로 재시작하세요",
+                400, detail="DeepSeek API 키를 먼저 입력하세요"
             )
 
     if key == "rag_watch_dirs":
@@ -147,7 +147,7 @@ async def models() -> dict:
 
 @router.get("/providers")
 def providers(cfg: deps.Settings) -> dict:
-    """그래프 추출 제공자 상태와 누적 토큰 사용량 (설정 페이지 RAG 탭)."""
+    """제공자 상태와 누적 토큰 사용량. 키 원문은 절대 담지 않는다 (마스킹만)."""
     usage = deepseek.usage_summary()
     budget = int(cfg.get("deepseek_token_budget") or 0)
     return {
@@ -155,13 +155,36 @@ def providers(cfg: deps.Settings) -> dict:
         "options": list(EXTRACT_PROVIDERS),
         "deepseek": {
             "configured": deepseek.configured(),
-            "base_url": deepseek.BASE_URL,
+            "key_source": deepseek.key_source(),  # env | db | ''
+            "key_masked": deepseek.masked_key(),
+            "base_url": deepseek.base_url(),
+            "base_url_from_env": bool(os.getenv("DEEPSEEK_BASE_URL", "").strip()),
             "model": cfg.get("deepseek_model"),
             "usage": usage,
             "budget": budget,
             "budget_left": max(0, budget - int(usage["total_tokens"])) if budget else None,
         },
     }
+
+
+class KeyIn(BaseModel):
+    key: str = ""
+
+
+@router.put("/providers/deepseek/key")
+def set_deepseek_key(body: KeyIn) -> dict:
+    """웹에서 키 저장. 빈 문자열이면 삭제한다. 저장된 값은 되돌려주지 않는다."""
+    if os.getenv("DEEPSEEK_API_KEY", "").strip():
+        raise HTTPException(
+            400,
+            detail="키가 이미 .env(환경변수)로 지정돼 있어 웹에서 바꿀 수 없습니다. "
+                   ".env 에서 DEEPSEEK_API_KEY 를 지우고 재시작하세요",
+        )
+    key = body.key.strip()
+    if key and len(key) < 8:
+        raise HTTPException(400, detail="키가 너무 짧습니다")
+    deepseek.set_key(key or None)
+    return {"ok": True, "configured": deepseek.configured(), "masked": deepseek.masked_key()}
 
 
 @router.post("/providers/deepseek/test")
