@@ -275,6 +275,8 @@ export default function Settings() {
             </div>
           </div>
 
+          <ExtractProviderCard val={val} set={set} />
+
           <OcrCard val={val} set={set} />
 
           <div className="card row">
@@ -368,6 +370,185 @@ function ListEditor({
         </button>
       </div>
     </>
+  )
+}
+
+interface ProviderInfo {
+  current: string
+  options: string[]
+  deepseek: {
+    configured: boolean
+    base_url: string
+    model: string
+    budget: number
+    budget_left: number | null
+    usage: {
+      calls: number
+      prompt_tokens: number
+      completion_tokens: number
+      cached_tokens: number
+      total_tokens: number
+      today_calls: number
+      today_tokens: number
+    }
+  }
+}
+
+const num = (n: number) => n.toLocaleString('ko-KR')
+
+function ExtractProviderCard({
+  val,
+  set,
+}: {
+  val: (k: string) => any
+  set: (k: string, v: any) => void
+}) {
+  const run = useRun()
+  const toast = useToast()
+  const [info, setInfo] = useState<ProviderInfo | null>(null)
+  const [testing, setTesting] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      setInfo(await api.get<ProviderInfo>('/api/settings/providers'))
+    } catch {
+      setInfo(null)
+    }
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  const ds = info?.deepseek
+  const provider = val('extract_provider')
+
+  return (
+    <div className="card">
+      <h3>
+        그래프 추출 제공자
+        <span className="mute2">청크당 LLM 1회 — 색인 속도를 좌우합니다</span>
+      </h3>
+
+      <div className="grid2">
+        <Field label="제공자" hint="deepseek 는 외부 API (토큰 과금)">
+          <select value={provider ?? 'local'} onChange={(e) => set('extract_provider', e.target.value)}>
+            <option value="local">로컬 (Ollama)</option>
+            <option value="deepseek" disabled={!ds?.configured}>
+              DeepSeek API{ds?.configured ? '' : ' — 키 미설정'}
+            </option>
+          </select>
+        </Field>
+        <Field label="엔티티 최대 개수" hint="출력 토큰을 묶는 상한">
+          <input
+            type="number"
+            value={val('extract_max_entities')}
+            onChange={(e) => set('extract_max_entities', Number(e.target.value))}
+          />
+        </Field>
+        <Field label="관계 최대 개수">
+          <input
+            type="number"
+            value={val('extract_max_relations')}
+            onChange={(e) => set('extract_max_relations', Number(e.target.value))}
+          />
+        </Field>
+      </div>
+
+      {!ds?.configured && (
+        <div className="mute2" style={{ marginTop: 4 }}>
+          DeepSeek 를 쓰려면 <code>.env</code> 에 <code>DEEPSEEK_API_KEY=…</code> 를 넣고
+          <code> make restart </code>로 재시작하세요. 키는 DB 에 저장하지 않습니다.
+        </div>
+      )}
+
+      {ds?.configured && (
+        <>
+          <div className="row wrap" style={{ margin: '4px 0 12px' }}>
+            <span className="badge ok">키 설정됨</span>
+            <span className="mute2">{ds.base_url}</span>
+            <button
+              className="sm right"
+              disabled={testing}
+              onClick={async () => {
+                setTesting(true)
+                const r = await run(() => api.post<any>('/api/settings/providers/deepseek/test'))
+                setTesting(false)
+                if (r) {
+                  toast(r.ok ? `연결 성공 (${r.tokens ?? 0} 토큰 사용)` : `실패: ${r.error}`, !r.ok)
+                  load()
+                }
+              }}
+            >
+              {testing ? '확인 중…' : '연결 테스트'}
+            </button>
+          </div>
+
+          <div className="grid2">
+            <Field label="모델">
+              <input
+                value={val('deepseek_model') ?? ''}
+                placeholder="deepseek-chat"
+                onChange={(e) => set('deepseek_model', e.target.value)}
+              />
+            </Field>
+            <Field label="동시 요청 수" hint="속도. 1~16">
+              <input
+                type="number"
+                value={val('deepseek_concurrency')}
+                onChange={(e) => set('deepseek_concurrency', Number(e.target.value))}
+              />
+            </Field>
+            <Field label="청크 입력 상한 (자)" hint="입력 토큰 절약">
+              <input
+                type="number"
+                value={val('deepseek_max_input_chars')}
+                onChange={(e) => set('deepseek_max_input_chars', Number(e.target.value))}
+              />
+            </Field>
+            <Field label="출력 토큰 상한">
+              <input
+                type="number"
+                value={val('deepseek_max_output_tokens')}
+                onChange={(e) => set('deepseek_max_output_tokens', Number(e.target.value))}
+              />
+            </Field>
+            <Field label="누적 토큰 예산" hint="0 이면 무제한. 넘으면 로컬로 되돌림">
+              <input
+                type="number"
+                value={val('deepseek_token_budget')}
+                onChange={(e) => set('deepseek_token_budget', Number(e.target.value))}
+              />
+            </Field>
+          </div>
+
+          <div className="card" style={{ marginBottom: 0, background: 'var(--n-page)' }}>
+            <div className="grid2">
+              <div>
+                <div className="mute2">누적 사용</div>
+                <div className="stat-value">{num(ds.usage.total_tokens)}</div>
+                <div className="mute2">
+                  입력 {num(ds.usage.prompt_tokens)} · 출력 {num(ds.usage.completion_tokens)}
+                  {ds.usage.cached_tokens > 0 && ` · 캐시적중 ${num(ds.usage.cached_tokens)}`}
+                </div>
+              </div>
+              <div>
+                <div className="mute2">오늘</div>
+                <div className="stat-value">{num(ds.usage.today_tokens)}</div>
+                <div className="mute2">호출 {num(ds.usage.today_calls)}회</div>
+              </div>
+              <div>
+                <div className="mute2">예산 잔여</div>
+                <div className="stat-value">
+                  {ds.budget_left === null ? '무제한' : num(ds.budget_left)}
+                </div>
+                <div className="mute2">총 호출 {num(ds.usage.calls)}회</div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 

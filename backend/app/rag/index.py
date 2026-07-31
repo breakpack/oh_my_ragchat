@@ -9,11 +9,12 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import httpx
 
-from .. import db, events, flags, jobs, ollama, paths, security
+from .. import db, deepseek, events, flags, jobs, ollama, paths, security
 from ..config import IMAGE_EXTS, INDEXABLE_EXTS, env
 from . import chunk as chunker
 from . import extract as extractor
@@ -222,10 +223,38 @@ def _replace_chunks(doc_id: int, rel: str, pieces: list[str], cfg: dict,
                   min(start + EMBED_BATCH, len(pieces)), len(pieces), "embedding")
 
 
+def pick_provider(cfg: dict) -> str:
+    """그래프 추출 제공자 결정. deepseek 을 쓸 수 없으면 조용히 로컬로 되돌린다."""
+    provider = str(cfg.get("extract_provider") or "local")
+    if provider != "deepseek":
+        return "local"
+    if not deepseek.configured():
+        log.warning("extract_provider=deepseek 이지만 DEEPSEEK_API_KEY 가 없어 로컬로 대체합니다")
+        return "local"
+    left = deepseek.budget_left(cfg)
+    if left is not None and left <= 0:
+        log.warning("DeepSeek 토큰 예산을 모두 썼습니다 → 로컬로 대체")
+        return "local"
+    return "deepseek"
+
+
+def _merge_one(row: dict, entities: list[dict], relations: list[dict],
+               embed_model: str, client: httpx.Client) -> None:
+    """DB 병합은 항상 메인 스레드에서 순차로 한다 (동시 upsert 교착을 피한다)."""
+    if not entities:
+        return
+    texts = [f"{e['name']}: {e['description']}".strip(": ") for e in entities]
+    vectors = ollama.embed_sync(texts, embed_model, client=client)
+    embeddings = {e["name_norm"]: v for e, v in zip(entities, vectors)}
+
+    ids = graph.merge_entities(entities, embeddings)
+    graph.merge_relations(relations, ids)
+    graph.link_chunk(row["id"], list(ids.values()))
+
+
 def _build_graph(doc_id: int, rel: str, cfg: dict, client: httpx.Client) -> None:
-    model = str(cfg["extract_model"])
-    num_ctx = int(cfg["num_ctx"])
     embed_model = str(cfg["embed_model"])
+    provider = pick_provider(cfg)
 
     with db.cursor(commit=False) as cur:
         cur.execute(
@@ -233,27 +262,63 @@ def _build_graph(doc_id: int, rel: str, cfg: dict, client: httpx.Client) -> None
         )
         rows = cur.fetchall()
 
-    for n, row in enumerate(rows, 1):
-        try:
-            entities, relations = graph.extract_graph(
-                row["content"], model, num_ctx=num_ctx, client=client
-            )
-        except ollama.OllamaError as exc:
-            log.warning("엔티티 추출 실패 (청크 %s): %s", row["id"], exc)
+    log.info("그래프 추출 시작 %s (청크 %d, provider=%s)", rel, len(rows), provider)
+
+    if provider == "deepseek":
+        _build_graph_parallel(doc_id, rel, rows, cfg, embed_model, client)
+    else:
+        for n, row in enumerate(rows, 1):
+            try:
+                entities, relations = graph.extract(
+                    row["content"], cfg, provider="local", ollama_client=client
+                )
+                _merge_one(row, entities, relations, embed_model, client)
+            except ollama.OllamaError as exc:
+                log.warning("엔티티 추출 실패 (청크 %s): %s", row["id"], exc)
             _progress(doc_id, rel, "graphing", n, len(rows), "graphing")
-            continue
-        if entities:
-            texts = [f"{e['name']}: {e['description']}".strip(": ") for e in entities]
-            vectors = ollama.embed_sync(texts, embed_model, client=client)
-            embeddings = {e["name_norm"]: v for e, v in zip(entities, vectors)}
-
-            ids = graph.merge_entities(entities, embeddings)
-            graph.merge_relations(relations, ids)
-            graph.link_chunk(row["id"], list(ids.values()))
-
-        _progress(doc_id, rel, "graphing", n, len(rows), "graphing")
 
     graph.refresh_degrees()
+
+
+def _build_graph_parallel(doc_id: int, rel: str, rows: list[dict], cfg: dict,
+                          embed_model: str, client: httpx.Client) -> None:
+    """외부 API 는 동시에 여러 청크를 보낼 수 있다. 추출만 병렬, 병합은 순차."""
+    workers = max(1, min(int(cfg["deepseek_concurrency"]), 16))
+    ds_client = httpx.Client(timeout=120, limits=httpx.Limits(max_connections=workers * 2))
+    fell_back = False
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(
+                    graph.extract, row["content"], cfg,
+                    provider="deepseek", ds_client=ds_client,
+                ): row
+                for row in rows
+            }
+            for n, fut in enumerate(as_completed(futures), 1):
+                row = futures[fut]
+                try:
+                    entities, relations = fut.result()
+                except deepseek.DeepSeekError as exc:
+                    # 키 만료·한도 초과 등은 남은 청크를 로컬로 처리한다
+                    log.warning("DeepSeek 추출 실패 (청크 %s): %s", row["id"], exc)
+                    fell_back = True
+                    try:
+                        entities, relations = graph.extract(
+                            row["content"], cfg, provider="local", ollama_client=client
+                        )
+                    except Exception:  # noqa: BLE001
+                        entities, relations = [], []
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("추출 실패 (청크 %s): %s", row["id"], exc)
+                    entities, relations = [], []
+
+                _merge_one(row, entities, relations, embed_model, client)
+                _progress(doc_id, rel, "graphing", n, len(rows), "graphing")
+    finally:
+        ds_client.close()
+    if fell_back:
+        log.info("일부 청크는 로컬 모델로 대체 처리했습니다: %s", rel)
 
 
 def delete_document(rel: str) -> int:

@@ -57,6 +57,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "rag_index_locked_files": False,
     "rag_max_file_mb": 32,
     "rag_extract_graph": True,  # 끄면 벡터 전용 RAG
+    # 그래프 추출 제공자. local = Ollama, deepseek = 외부 API(빠름, 토큰 과금)
+    "extract_provider": "local",
+    "extract_max_entities": 12,  # 출력 토큰을 묶는 상한 (두 제공자 공통)
+    "extract_max_relations": 12,
+    "deepseek_model": "deepseek-chat",
+    "deepseek_concurrency": 4,  # 청크를 동시에 몇 개씩 보낼지
+    "deepseek_max_input_chars": 4000,  # 청크를 이 길이로 잘라 보낸다
+    "deepseek_max_output_tokens": 900,
+    "deepseek_token_budget": 3_000_000,  # 누적 상한. 넘으면 로컬로 되돌린다 (0=무제한)
     "rag_use_keyword": True,  # 벡터 검색과 별개로 본문 키워드(trgm) 매칭을 병행
     "rag_top_k_keyword": 6,
     "rag_ocr_enabled": True,  # 이미지 / 텍스트 없는 PDF 를 OCR 로 읽는다
@@ -80,6 +89,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 RAG_MODES = ("naive", "local", "global", "hybrid")
+EXTRACT_PROVIDERS = ("local", "deepseek")
 
 TEXT_EXTS = {".txt", ".md", ".markdown", ".rst", ".csv", ".log", ".json",
              ".yaml", ".yml", ".py", ".ts", ".tsx", ".js", ".jsx", ".sql",

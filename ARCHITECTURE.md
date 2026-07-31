@@ -69,6 +69,7 @@ entities(id, name_norm, name, type, description, embedding vector(1024), degree)
 relations(id, src_id, tgt_id, description, keywords, weight)
 chunk_entities(chunk_id, entity_id)            -- 청크 ↔ 엔티티 역인덱스
 jobs(id, kind, payload jsonb, status, attempts, error, created_at, started_at, done_at)
+llm_usage(id, provider, model, prompt_tokens, completion_tokens, cached_tokens, created_at)
 ```
 
 - 벡터 인덱스: `chunks.embedding`, `entities.embedding` 에 HNSW (`vector_cosine_ops`).
@@ -100,9 +101,21 @@ jobs(id, kind, payload jsonb, status, attempts, error, created_at, started_at, d
      확대한 뒤 grayscale+autocontrast 를 건다. `documents.ocr` 에 사용 여부를 남긴다.
 3. **청킹** — 문단 경계 우선, 목표 1200자 / 오버랩 150자.
 4. **임베딩** — Ollama `/api/embed`, 모델 `bge-m3` (1024차원, 한국어 강함). 배치 16.
-5. **엔티티/관계 추출** — 청크마다 로컬 LLM 1회 호출. 구조화 출력(JSON)으로
+5. **엔티티/관계 추출** — 청크마다 LLM 1회 호출. 구조화 출력(JSON)으로
    `entities[{name,type,description}]`, `relations[{src,tgt,description,keywords,weight}]`.
    추출 모델은 채팅 모델과 분리 설정(기본 `gemma4:e4b` 처럼 빠른 모델).
+   - **제공자 선택** (`extract_provider`): `local`(Ollama) 또는 `deepseek`(외부 API).
+     로컬은 청크당 수 초라 논문 PDF 한 건(수십 청크)에도 수 분이 든다. DeepSeek 은
+     OpenAI 호환 `json_object` 모드로 호출하고 **청크를 동시에 N개씩** 보낸다
+     (`deepseek_concurrency`, 기본 4 → 실측 4배).
+   - **비용 억제**: 입력은 `deepseek_max_input_chars`(4000자)로 자르고, 출력은
+     `deepseek_max_output_tokens`(900)과 엔티티/관계 개수 상한으로 묶는다. 응답의
+     `usage` 를 `llm_usage` 에 적재하고 `deepseek_token_budget` 누적 상한을 넘으면
+     **자동으로 로컬로 되돌아간다**. 개별 호출이 실패해도 그 청크만 로컬로 대체한다.
+   - **키 보관**: `DEEPSEEK_API_KEY` 는 `.env`(환경변수)에만 둔다. 설정 API 로 새어나가지
+     않도록 `app_settings` 에 저장하지 않는다.
+   - **DB 병합은 항상 메인 스레드에서 순차로** 한다. 추출만 병렬이고, 엔티티 upsert 를
+     동시에 돌리면 교착이 날 수 있어서다.
 6. **머지** — 엔티티는 정규화된 이름(`lower`+공백정리)으로 upsert, description 을
    누적 후 `name + description` 을 임베딩. 관계는 (src,tgt) 로 weight 누적.
 
@@ -209,6 +222,8 @@ POST   /api/rag/scan                   주기 스캔을 기다리지 않고 즉�
 
 GET/PUT /api/settings                  설정 전체 조회/부분 저장
 GET    /api/settings/models            Ollama 모델 목록 프록시
+GET    /api/settings/providers         추출 제공자 상태 + 토큰 사용량
+POST   /api/settings/providers/deepseek/test   키 동작 확인 (최소 토큰)
 GET    /api/health                     db / ollama 헬스체크
 ```
 

@@ -96,6 +96,19 @@ def stats() -> dict[str, int]:
         return {r["status"]: r["n"] for r in cur.fetchall()}
 
 
+def requeue_running() -> int:
+    """워커 기동 시 호출. 워커는 하나뿐이므로 이 시점의 running 은 전부 고아 잡이다.
+
+    (SIGTERM 으로 중단된 잡을 되살리지 않으면 sweep_stale 의 시간 조건에 걸릴 때까지
+    영영 running 으로 남아 큐가 막힌다)
+    """
+    with db.cursor() as cur:
+        cur.execute(
+            "UPDATE jobs SET status = 'queued', started_at = NULL WHERE status = 'running'"
+        )
+        return cur.rowcount
+
+
 def sweep_stale(minutes: int = 60) -> int:
     """워커가 죽어서 running 인 채 방치된 잡을 되살린다."""
     with db.cursor() as cur:

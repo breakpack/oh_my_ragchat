@@ -1,0 +1,184 @@
+"""DeepSeek(OpenAI 호환) 클라이언트 — 그래프 추출 가속용.
+
+로컬 모델은 청크당 수 초씩 걸려 논문 PDF 한 건(수십 청크)에도 수 분이 든다.
+외부 API 는 훨씬 빠르지만 토큰이 곧 비용이므로, 입력 길이·출력 토큰·추출 개수를
+모두 상한으로 묶고 누적 사용량을 llm_usage 에 기록해 예산을 넘기면 로컬로 돌린다.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from typing import Any
+
+import httpx
+
+from . import db
+
+log = logging.getLogger("chatchat.deepseek")
+
+BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+
+
+class DeepSeekError(RuntimeError):
+    pass
+
+
+def api_key() -> str:
+    """키는 DB 설정이 아니라 환경변수에만 둔다 (설정 API 로 새어나가지 않게)."""
+    return os.getenv("DEEPSEEK_API_KEY", "").strip()
+
+
+def configured() -> bool:
+    return bool(api_key())
+
+
+# ─────────────────────────── 사용량 / 예산 ───────────────────────────
+
+
+def record_usage(model: str, usage: dict[str, Any]) -> None:
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO llm_usage
+                       (provider, model, prompt_tokens, completion_tokens, cached_tokens)
+                VALUES ('deepseek', %s, %s, %s, %s)
+                """,
+                (
+                    model,
+                    int(usage.get("prompt_tokens") or 0),
+                    int(usage.get("completion_tokens") or 0),
+                    int(usage.get("prompt_cache_hit_tokens") or 0),
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001 - 기록 실패로 추출을 멈추지 않는다
+        log.debug("사용량 기록 실패: %s", exc)
+
+
+def total_tokens() -> int:
+    with db.cursor(commit=False) as cur:
+        cur.execute(
+            "SELECT COALESCE(sum(prompt_tokens + completion_tokens), 0) AS n "
+            "FROM llm_usage WHERE provider = 'deepseek'"
+        )
+        return int(cur.fetchone()["n"])
+
+
+def usage_summary() -> dict[str, Any]:
+    with db.cursor(commit=False) as cur:
+        cur.execute(
+            """
+            SELECT count(*) AS calls,
+                   COALESCE(sum(prompt_tokens), 0)     AS prompt_tokens,
+                   COALESCE(sum(completion_tokens), 0) AS completion_tokens,
+                   COALESCE(sum(cached_tokens), 0)     AS cached_tokens,
+                   max(created_at)                     AS last_call
+              FROM llm_usage WHERE provider = 'deepseek'
+            """
+        )
+        row = cur.fetchone()
+        cur.execute(
+            """
+            SELECT count(*) AS calls,
+                   COALESCE(sum(prompt_tokens + completion_tokens), 0) AS tokens
+              FROM llm_usage
+             WHERE provider = 'deepseek' AND created_at >= date_trunc('day', now())
+            """
+        )
+        today = cur.fetchone()
+    return {
+        **row,
+        "total_tokens": int(row["prompt_tokens"]) + int(row["completion_tokens"]),
+        "today_calls": today["calls"],
+        "today_tokens": today["tokens"],
+    }
+
+
+def budget_left(cfg: dict) -> int | None:
+    """남은 토큰. 예산이 0(무제한)이면 None."""
+    budget = int(cfg.get("deepseek_token_budget") or 0)
+    if budget <= 0:
+        return None
+    return max(0, budget - total_tokens())
+
+
+# ─────────────────────────── 호출 ───────────────────────────
+
+
+def chat_json(
+    system: str,
+    prompt: str,
+    *,
+    model: str,
+    max_tokens: int,
+    temperature: float = 0.0,
+    client: httpx.Client | None = None,
+    timeout: float = 120.0,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """JSON 모드로 한 번 호출. (파싱된 결과, usage) 를 돌려준다."""
+    key = api_key()
+    if not key:
+        raise DeepSeekError("DEEPSEEK_API_KEY 가 설정되지 않았습니다")
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        # DeepSeek 은 json_object 모드에서 프롬프트에 'json' 이 있어야 한다
+        "response_format": {"type": "json_object"},
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+
+    owned = client is None
+    client = client or httpx.Client(timeout=timeout)
+    try:
+        r = client.post(
+            f"{BASE_URL}/chat/completions",
+            json=payload,
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=timeout,
+        )
+        if r.status_code >= 400:
+            raise DeepSeekError(f"HTTP {r.status_code}: {r.text[:300]}")
+        body = r.json()
+    except httpx.HTTPError as exc:
+        raise DeepSeekError(f"요청 실패: {exc}") from exc
+    finally:
+        if owned:
+            client.close()
+
+    usage = body.get("usage") or {}
+    if usage:
+        record_usage(model, usage)
+
+    try:
+        content = body["choices"][0]["message"]["content"]
+    except (KeyError, IndexError) as exc:
+        raise DeepSeekError(f"예상과 다른 응답 형식: {str(body)[:200]}") from exc
+
+    try:
+        return json.loads(content), usage
+    except json.JSONDecodeError as exc:
+        raise DeepSeekError(f"JSON 파싱 실패: {content[:200]}") from exc
+
+
+def ping(model: str = "deepseek-chat") -> dict[str, Any]:
+    if not configured():
+        return {"ok": False, "error": "DEEPSEEK_API_KEY 미설정"}
+    try:
+        data, usage = chat_json(
+            'JSON 으로만 답한다. 형식: {"ok": true}',
+            'ok 를 true 로 하는 json 을 반환하라.',
+            model=model,
+            max_tokens=20,
+            timeout=20,
+        )
+        return {"ok": True, "model": model, "tokens": usage.get("total_tokens")}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

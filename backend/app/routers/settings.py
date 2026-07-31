@@ -6,8 +6,8 @@ from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, status
 
-from .. import db, deps, flags, ollama, paths
-from ..config import DEFAULT_SETTINGS, RAG_MODES
+from .. import db, deepseek, deps, flags, ollama, paths
+from ..config import DEFAULT_SETTINGS, EXTRACT_PROVIDERS, RAG_MODES
 
 router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[deps.Auth])
 
@@ -26,6 +26,12 @@ _RANGES: dict[str, tuple[float, float]] = {
     "rag_top_k_keyword": (1, 50),
     "rag_ocr_min_chars": (0, 10000),
     "chat_attach_max_mb": (1, 256),
+    "extract_max_entities": (1, 60),
+    "extract_max_relations": (1, 60),
+    "deepseek_concurrency": (1, 16),
+    "deepseek_max_input_chars": (500, 20000),
+    "deepseek_max_output_tokens": (100, 8000),
+    "deepseek_token_budget": (0, 1_000_000_000),
     "session_days": (1, 365),
     "file_unlock_minutes": (1, 1440),
 }
@@ -66,6 +72,18 @@ def _coerce(key: str, value: Any) -> Any:
 
     if key == "rag_default_mode" and value not in RAG_MODES:
         raise HTTPException(400, detail=f"rag_default_mode: {RAG_MODES} 중 하나여야 합니다")
+
+    if key == "extract_provider":
+        if value not in EXTRACT_PROVIDERS:
+            raise HTTPException(
+                400, detail=f"extract_provider: {EXTRACT_PROVIDERS} 중 하나여야 합니다"
+            )
+        if value == "deepseek" and not deepseek.configured():
+            raise HTTPException(
+                400,
+                detail="DEEPSEEK_API_KEY 가 설정되지 않았습니다. .env 에 키를 넣고 "
+                       "make restart 로 재시작하세요",
+            )
 
     if key == "rag_watch_dirs":
         # 감시 폴더는 NAS 루트 기준 상대경로여야 한다
@@ -125,6 +143,31 @@ async def models() -> dict:
         })
     items.sort(key=lambda x: x["name"] or "")
     return {"models": items}
+
+
+@router.get("/providers")
+def providers(cfg: deps.Settings) -> dict:
+    """그래프 추출 제공자 상태와 누적 토큰 사용량 (설정 페이지 RAG 탭)."""
+    usage = deepseek.usage_summary()
+    budget = int(cfg.get("deepseek_token_budget") or 0)
+    return {
+        "current": cfg.get("extract_provider", "local"),
+        "options": list(EXTRACT_PROVIDERS),
+        "deepseek": {
+            "configured": deepseek.configured(),
+            "base_url": deepseek.BASE_URL,
+            "model": cfg.get("deepseek_model"),
+            "usage": usage,
+            "budget": budget,
+            "budget_left": max(0, budget - int(usage["total_tokens"])) if budget else None,
+        },
+    }
+
+
+@router.post("/providers/deepseek/test")
+def test_deepseek(cfg: deps.Settings) -> dict:
+    """키가 실제로 동작하는지 최소 토큰으로 한 번 호출해 본다."""
+    return deepseek.ping(str(cfg.get("deepseek_model") or "deepseek-chat"))
 
 
 @router.get("/ocr")

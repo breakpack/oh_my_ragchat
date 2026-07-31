@@ -65,7 +65,9 @@ def main() -> None:
     _wait_for_db()
 
     log.info("worker 시작 (스캔 주기 %ds, nas=%s)", SCAN_SECONDS, paths.root())
-    jobs.sweep_stale(minutes=30)
+    revived = jobs.requeue_running()
+    if revived:
+        log.info("중단됐던 잡 %d건을 큐로 되돌렸습니다", revived)
 
     last_scan = 0.0
     client = httpx.Client(timeout=600)
