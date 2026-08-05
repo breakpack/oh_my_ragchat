@@ -738,8 +738,16 @@ a.badge:hover { text-decoration: none; border-color: var(--primary); color: var(
 }
 .graph-tab .board { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
+.graph-resize {
+  flex: none;
+  width: 6px;
+  border-radius: var(--r-full);
+  cursor: col-resize;
+  background: transparent;
+}
+.graph-resize:hover, .graph-resize:active { background: var(--primary); }
+
 .graph-side {
-  width: 320px;
   flex: none;
   display: flex;
   flex-direction: column;

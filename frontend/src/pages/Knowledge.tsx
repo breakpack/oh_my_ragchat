@@ -339,6 +339,26 @@ function GraphView() {
   const [data, setData] = useState<{ nodes: GNode[]; edges: GEdge[]; seed: string | null } | null>(null)
   const [busy, setBusy] = useState(false)
   const [active, setActive] = useState<GNode | null>(null)
+  const [sideW, setSideW] = useState(() => Number(localStorage.getItem('graph.sideW')) || 320)
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('graph.sideOff') === '1')
+
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = sideW
+    let w = startW
+    const move = (ev: PointerEvent) => {
+      w = Math.min(640, Math.max(220, startW + (startX - ev.clientX)))
+      setSideW(w)
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      localStorage.setItem('graph.sideW', String(w))
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
 
   const load = useCallback(
     async (name?: string, opts?: { limit?: number; depth?: number }) => {
@@ -371,6 +391,13 @@ function GraphView() {
     [nodes],
   )
 
+  const toggleSide = () => {
+    setCollapsed((v) => {
+      localStorage.setItem('graph.sideOff', v ? '0' : '1')
+      return !v
+    })
+  }
+
   const open = (n: GNode) => {
     setEntity(n.name)
     load(n.name)
@@ -399,6 +426,9 @@ function GraphView() {
           <button className="primary" onClick={() => load(entity)} disabled={busy}>
             {busy ? '…' : '보기'}
           </button>
+          <button onClick={toggleSide} aria-label={collapsed ? '설명 패널 열기' : '설명 패널 접기'}>
+            {collapsed ? '설명 ▸' : '◂ 접기'}
+          </button>
         </div>
 
         {nodes.length ? (
@@ -417,7 +447,10 @@ function GraphView() {
         )}
       </div>
 
-      <aside className="graph-side">
+      {!collapsed && <div className="graph-resize" onPointerDown={startResize} title="드래그해서 너비 조절" />}
+
+      {!collapsed && (
+      <aside className="graph-side" style={{ width: sideW }}>
         {active ? (
           <div className="card">
             <h3>{active.name}</h3>
@@ -462,6 +495,7 @@ function GraphView() {
 
         <div className="mute2">노드 {nodes.length}개 · 관계 {edges.length}개</div>
       </aside>
+      )}
     </div>
   )
 }
