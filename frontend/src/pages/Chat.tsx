@@ -19,15 +19,25 @@ const IMAGE_RE = /\.(png|jpe?g|webp|bmp|tiff?|gif)$/i
 
 export interface ModelOpt {
   name: string
+  family?: string | null
   embedding?: boolean
   remote?: boolean
   label?: string
 }
 
-/** 로컬(Ollama) / 원격(DeepSeek) 을 optgroup 으로 나눠 보여준다. */
+// 원격 제공자별 optgroup 이름. 여기 없는 family 는 이름 그대로 쓴다.
+const PROVIDER_LABEL: Record<string, string> = {
+  deepseek: 'DeepSeek API',
+  openai: 'OpenAI API',
+  anthropic: 'Claude API',
+}
+
+/** 로컬(Ollama) / 원격을 제공자별 optgroup 으로 나눠 보여준다. */
 function ModelOptions({ models }: { models: ModelOpt[] }) {
   const local = models.filter((m) => !m.remote)
   const remote = models.filter((m) => m.remote)
+  const families = [...new Set(remote.map((m) => m.family || 'remote'))]
+
   return (
     <>
       {!!local.length && (
@@ -37,13 +47,15 @@ function ModelOptions({ models }: { models: ModelOpt[] }) {
           ))}
         </optgroup>
       )}
-      {!!remote.length && (
-        <optgroup label="DeepSeek API">
-          {remote.map((m) => (
-            <option key={m.name} value={m.name}>{m.label || m.name}</option>
-          ))}
+      {families.map((f) => (
+        <optgroup key={f} label={PROVIDER_LABEL[f] ?? f}>
+          {remote
+            .filter((m) => (m.family || 'remote') === f)
+            .map((m) => (
+              <option key={m.name} value={m.name}>{m.label || m.name}</option>
+            ))}
         </optgroup>
-      )}
+      ))}
     </>
   )
 }
