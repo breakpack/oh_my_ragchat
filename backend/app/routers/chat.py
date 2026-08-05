@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .. import db, deepseek, deps, ollama, paths, security
+from .. import db, deepseek, deps, ollama, paths, remote, security
 from ..config import IMAGE_EXTS, RAG_MODES, env
 from ..rag import extract as extractor
 from ..rag.retrieve import retrieve
@@ -226,6 +226,12 @@ async def send(session_id: int, body: MessageIn, cfg: deps.Settings) -> Streamin
             status.HTTP_400_BAD_REQUEST,
             detail="DeepSeek 모델을 쓰려면 설정에서 API 키를 먼저 입력하세요",
         )
+    provider = remote.provider_for(model)
+    if provider and not remote.configured(provider.name):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"{provider.label} 모델을 쓰려면 설정에서 API 키를 먼저 입력하세요",
+        )
     temperature = body.temperature
     if temperature is None:
         temperature = (persona or {}).get("temperature")
@@ -284,6 +290,10 @@ async def send(session_id: int, body: MessageIn, cfg: deps.Settings) -> Streamin
 
             if deepseek.is_deepseek_model(model):
                 source = deepseek.chat_stream(
+                    model, messages, temperature=float(temperature)
+                )
+            elif provider:
+                source = remote.chat_stream(
                     model, messages, temperature=float(temperature)
                 )
             else:

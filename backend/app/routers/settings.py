@@ -8,8 +8,8 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException, status
 from pydantic import BaseModel
 
-from .. import db, deepseek, deps, flags, ollama, paths
-from ..config import DEFAULT_SETTINGS, EXTRACT_PROVIDERS, RAG_MODES
+from .. import db, deepseek, deps, flags, ollama, paths, remote
+from ..config import ADMIN_SETTINGS, DEFAULT_SETTINGS, EXTRACT_PROVIDERS, RAG_MODES
 
 router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[deps.Auth])
 
@@ -97,16 +97,21 @@ def _coerce(key: str, value: Any) -> Any:
 
 
 @router.get("")
-def get_settings() -> dict:
+def get_settings(user: deps.CurrentUser) -> dict:
     return {"settings": db.get_settings(), "defaults": DEFAULT_SETTINGS,
-            "rag_modes": list(RAG_MODES)}
+            "rag_modes": list(RAG_MODES), "admin_keys": sorted(ADMIN_SETTINGS),
+            "is_admin": user.is_admin}
 
 
 @router.put("")
-def put_settings(patch: dict[str, Any] = Body(...)) -> dict:
+def put_settings(user: deps.CurrentUser, patch: dict[str, Any] = Body(...)) -> dict:
     unknown = [k for k in patch if k not in DEFAULT_SETTINGS]
     if unknown:
         raise HTTPException(400, detail=f"알 수 없는 설정 키: {unknown}")
+
+    admin_keys = [k for k in patch if k in ADMIN_SETTINGS]
+    if admin_keys and not user.is_admin:
+        raise HTTPException(403, detail=f"관리자만 바꿀 수 있는 설정입니다: {admin_keys}")
 
     clean = {k: _coerce(k, v) for k, v in patch.items()}
 
@@ -121,12 +126,12 @@ def put_settings(patch: dict[str, Any] = Body(...)) -> dict:
 @router.get("/models")
 async def models() -> dict:
     """Ollama 모델 목록 프록시. 채팅/추출/임베딩 모델 셀렉트박스용."""
+    # Ollama 가 꺼져 있어도 외부 API 모델은 쓸 수 있어야 하므로 실패를 삼킨다
+    ollama_error = ""
     try:
         raw = await ollama.list_models()
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, detail=f"Ollama 에 연결할 수 없습니다: {exc}"
-        ) from exc
+        raw, ollama_error = [], f"Ollama 에 연결할 수 없습니다: {exc}"
 
     items = []
     for m in raw:
@@ -157,7 +162,27 @@ async def models() -> dict:
                 "remote": True,
                 "label": m["label"],
             })
-    return {"models": items}
+
+    # OpenAI / Claude 는 모델 목록을 API 로 조회한다 (이름을 상수로 박으면 금방 낡는다)
+    for name, p in remote.PROVIDERS.items():
+        if not remote.configured(name):
+            continue
+        for m in await remote.list_models(name):
+            items.append({
+                "name": f"{p.prefix}{m['id']}",
+                "size": None,
+                "family": name,
+                "parameter_size": None,
+                "capabilities": ["completion"] + (["thinking"] if m["thinking"] else []),
+                "embedding": False,
+                "thinking": m["thinking"],
+                "remote": True,
+                "label": m["label"],
+            })
+
+    if not items and ollama_error:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=ollama_error)
+    return {"models": items, "ollama_error": ollama_error}
 
 
 @router.get("/providers")
@@ -179,6 +204,21 @@ def providers(cfg: deps.Settings) -> dict:
             "budget": budget,
             "budget_left": max(0, budget - int(usage["total_tokens"])) if budget else None,
         },
+        # 채팅 전용 외부 제공자 (OpenAI / Claude). 키 원문은 여기에도 담지 않는다.
+        "chat": [
+            {
+                "name": name,
+                "label": p.label,
+                "prefix": p.prefix,
+                "key_hint": p.key_hint,
+                "env": p.env,
+                "configured": remote.configured(name),
+                "key_source": remote.key_source(name),
+                "key_masked": remote.masked_key(name),
+                "usage": remote.usage_summary(name),
+            }
+            for name, p in remote.PROVIDERS.items()
+        ],
     }
 
 
@@ -186,7 +226,7 @@ class KeyIn(BaseModel):
     key: str = ""
 
 
-@router.put("/providers/deepseek/key")
+@router.put("/providers/deepseek/key", dependencies=[deps.AdminOnly])
 def set_deepseek_key(body: KeyIn) -> dict:
     """웹에서 키 저장. 빈 문자열이면 삭제한다. 저장된 값은 되돌려주지 않는다."""
     if os.getenv("DEEPSEEK_API_KEY", "").strip():
@@ -202,10 +242,40 @@ def set_deepseek_key(body: KeyIn) -> dict:
     return {"ok": True, "configured": deepseek.configured(), "masked": deepseek.masked_key()}
 
 
-@router.post("/providers/deepseek/test")
+@router.post("/providers/deepseek/test", dependencies=[deps.AdminOnly])
 def test_deepseek(cfg: deps.Settings) -> dict:
     """키가 실제로 동작하는지 최소 토큰으로 한 번 호출해 본다."""
     return deepseek.ping(str(cfg.get("deepseek_model") or "deepseek-chat"))
+
+
+@router.put("/providers/{name}/key", dependencies=[deps.AdminOnly])
+def set_provider_key(name: str, body: KeyIn) -> dict:
+    """OpenAI / Claude 키 저장. 빈 문자열이면 삭제. 저장된 값은 되돌려주지 않는다."""
+    if name not in remote.PROVIDERS:
+        raise HTTPException(404, detail=f"알 수 없는 제공자: {name}")
+    provider = remote.PROVIDERS[name]
+    if os.getenv(provider.env, "").strip():
+        raise HTTPException(
+            400,
+            detail=f"키가 이미 .env({provider.env})로 지정돼 있어 웹에서 바꿀 수 없습니다",
+        )
+    key = body.key.strip()
+    if key and len(key) < 8:
+        raise HTTPException(400, detail="키가 너무 짧습니다")
+    remote.set_key(name, key or None)
+    return {"ok": True, "configured": remote.configured(name), "masked": remote.masked_key(name)}
+
+
+@router.post("/providers/{name}/test", dependencies=[deps.AdminOnly])
+async def test_provider(name: str, model: str = "") -> dict:
+    if name not in remote.PROVIDERS:
+        raise HTTPException(404, detail=f"알 수 없는 제공자: {name}")
+    if not model:
+        models = await remote.list_models(name)
+        if not models:
+            return {"ok": False, "error": "모델 목록을 가져오지 못했습니다 (키를 확인하세요)"}
+        model = models[0]["id"]
+    return await remote.ping(name, model)
 
 
 @router.get("/ocr")

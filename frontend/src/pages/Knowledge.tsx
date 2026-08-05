@@ -369,7 +369,9 @@ export function GraphView({ source }: { source?: string } = {}) {
             <option value={2}>2홉</option>
           </select>
           <select style={{ width: 100 }} value={limit} onChange={(e) => { const v = Number(e.target.value); setLimit(v); load(entity || undefined, { limit: v }) }}>
-            {[60, 150, 300, 600].map((v) => <option key={v} value={v}>{v}개</option>)}
+            {[60, 150, 300, 600, 1500, 4000].map((v) => <option key={v} value={v}>{v}개</option>)}
+            {/* 노드가 많으면 force 시뮬레이션이 무거워진다 — 상한까지 열어두되 마지막 선택지로 */}
+            <option value={20000}>전체</option>
           </select>
           <Toggle checked={labels} onChange={setLabels}>라벨</Toggle>
           <button className="primary" onClick={() => load(entity)} disabled={busy}>

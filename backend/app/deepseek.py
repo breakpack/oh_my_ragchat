@@ -44,8 +44,8 @@ def _db_key() -> str:
         if _cache["value"] is not None and now - _cache["at"] < _CACHE_TTL:
             return _cache["value"]
     try:
-        with db.cursor(commit=False) as cur:
-            cur.execute("SELECT value FROM secrets WHERE key = %s", (SECRET_NAME,))
+        with db.cursor(commit=False, schema="public") as cur:
+            cur.execute("SELECT value FROM global_secrets WHERE key = %s", (SECRET_NAME,))
             row = cur.fetchone()
         value = (row["value"] if row else "").strip()
     except Exception as exc:  # noqa: BLE001 - 마이그레이션 전이면 테이블이 없을 수 있다
@@ -59,17 +59,17 @@ def _db_key() -> str:
 def set_key(value: str | None) -> None:
     """웹에서 키 저장/삭제. 값은 어떤 API 로도 되돌려주지 않는다."""
     value = (value or "").strip()
-    with db.cursor() as cur:
+    with db.cursor(schema="public") as cur:
         if value:
             cur.execute(
                 """
-                INSERT INTO secrets (key, value, updated_at) VALUES (%s, %s, now())
+                INSERT INTO global_secrets (key, value, updated_at) VALUES (%s, %s, now())
                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
                 """,
                 (SECRET_NAME, value),
             )
         else:
-            cur.execute("DELETE FROM secrets WHERE key = %s", (SECRET_NAME,))
+            cur.execute("DELETE FROM global_secrets WHERE key = %s", (SECRET_NAME,))
     with _lock:
         _cache.update(value=None, at=0.0)
 

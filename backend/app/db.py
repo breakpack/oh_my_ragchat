@@ -13,7 +13,7 @@ from psycopg_pool import ConnectionPool
 from pathlib import Path
 
 from . import ctx
-from .config import DEFAULT_SETTINGS, env
+from .config import ADMIN_SETTINGS, DEFAULT_SETTINGS, env
 
 _pool: ConnectionPool | None = None
 
@@ -85,34 +85,55 @@ def close_pool() -> None:
 
 
 def get_settings() -> dict[str, Any]:
-    """기본값 위에 DB 저장값을 덮어쓴 전체 설정."""
+    """기본값 ← 전역(관리자) ← 개인 순으로 덮어쓴 전체 설정.
+
+    관리자 전용 키는 개인 설정으로 덮어쓸 수 없다.
+    """
     merged = dict(DEFAULT_SETTINGS)
-    with cursor(commit=False) as cur:
-        cur.execute("SELECT key, value FROM app_settings")
+    with cursor(commit=False, schema="public") as cur:
+        cur.execute("SELECT key, value FROM global_settings")
         for row in cur.fetchall():
             if row["key"] in DEFAULT_SETTINGS:
                 merged[row["key"]] = row["value"]
+
+    if ctx.get() is not None:
+        with cursor(commit=False) as cur:
+            cur.execute("SELECT key, value FROM app_settings")
+            for row in cur.fetchall():
+                if row["key"] in DEFAULT_SETTINGS and row["key"] not in ADMIN_SETTINGS:
+                    merged[row["key"]] = row["value"]
     return merged
 
 
 def get_setting(key: str) -> Any:
-    with cursor(commit=False) as cur:
-        cur.execute("SELECT value FROM app_settings WHERE key = %s", (key,))
-        row = cur.fetchone()
-    if row is None:
+    table, schema = (
+        ("global_settings", "public") if key in ADMIN_SETTINGS else ("app_settings", None)
+    )
+    if schema is None and ctx.get() is None:
         return DEFAULT_SETTINGS.get(key)
-    return row["value"]
+    with cursor(commit=False, schema=schema) as cur:
+        cur.execute(f"SELECT value FROM {table} WHERE key = %s", (key,))
+        row = cur.fetchone()
+    return DEFAULT_SETTINGS.get(key) if row is None else row["value"]
 
 
 def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
-    """DEFAULT_SETTINGS 에 있는 키만 저장 (알 수 없는 키는 무시)."""
+    """DEFAULT_SETTINGS 에 있는 키만 저장. 관리자 키는 전역, 나머지는 개인 스키마로."""
     known = {k: v for k, v in patch.items() if k in DEFAULT_SETTINGS}
-    if known:
-        with cursor() as cur:
-            for key, value in known.items():
+    admin = {k: v for k, v in known.items() if k in ADMIN_SETTINGS}
+    personal = {k: v for k, v in known.items() if k not in ADMIN_SETTINGS}
+
+    for values, table, schema in (
+        (admin, "global_settings", "public"),
+        (personal, "app_settings", None),
+    ):
+        if not values:
+            continue
+        with cursor(schema=schema) as cur:
+            for key, value in values.items():
                 cur.execute(
-                    """
-                    INSERT INTO app_settings (key, value) VALUES (%s, %s)
+                    f"""
+                    INSERT INTO {table} (key, value) VALUES (%s, %s)
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
                     """,
                     (key, json.dumps(value)),

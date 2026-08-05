@@ -17,14 +17,20 @@ export default function Settings() {
   const toast = useToast()
   const [tab, setTab] = useState<Tab>('conn')
   const [cfg, setCfg] = useState<Record<string, any> | null>(null)
+  const [admin, setAdmin] = useState(false)
   const [dirty, setDirty] = useState<Record<string, any>>({})
   const [models, setModels] = useState<ModelInfo[]>([])
   const [health, setHealth] = useState<any>(null)
   const [saving, setSaving] = useState(false)
 
   const load = useCallback(async () => {
-    const r = await run(() => api.get<{ settings: Record<string, any> }>('/api/settings'))
-    if (r) setCfg(r.settings)
+    const r = await run(() =>
+      api.get<{ settings: Record<string, any>; is_admin: boolean }>('/api/settings'),
+    )
+    if (r) {
+      setCfg(r.settings)
+      setAdmin(r.is_admin)
+    }
   }, [run])
 
   const loadModels = useCallback(async () => {
@@ -90,15 +96,16 @@ export default function Settings() {
       </header>
 
       <div className="tabs">
-        {([
+        {(([
           ['conn', '연결'],
-          ['models', '모델'],
+          ['models', admin ? '모델' : '채팅'],
           ['rag', 'RAG'],
           ['nas', 'NAS'],
           ['security', '보안'],
           ['personas', '페르소나'],
-          ['users', '사용자'],
-        ] as [Tab, string][]).map(([t, label]) => (
+          // 모델·외부 API·계정은 서버 전체에 걸리는 값이라 관리자만 본다
+          ...(admin ? [['users', '사용자']] : []),
+        ] as [Tab, string][])).map(([t, label]) => (
           <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{label}</button>
         ))}
       </div>
@@ -129,20 +136,22 @@ export default function Settings() {
             )}
           </div>
 
-          <div className="card">
-            <h3>Ollama</h3>
-            <Field label="Base URL" hint="호스트에서 네이티브로 실행 중인 Ollama">
-              <input value={val('ollama_base_url') ?? ''} onChange={(e) => set('ollama_base_url', e.target.value)} />
-            </Field>
-            <div className="mute2">
-              macOS 컨테이너는 Metal GPU 를 못 쓰므로 Ollama 는 호스트에서 돌리고
-              <code> host.docker.internal:11434 </code>로 접속합니다.
+          {admin && (
+            <div className="card">
+              <h3>Ollama</h3>
+              <Field label="Base URL" hint="호스트에서 네이티브로 실행 중인 Ollama">
+                <input value={val('ollama_base_url') ?? ''} onChange={(e) => set('ollama_base_url', e.target.value)} />
+              </Field>
+              <div className="mute2">
+                macOS 컨테이너는 Metal GPU 를 못 쓰므로 Ollama 는 호스트에서 돌리고
+                <code> host.docker.internal:11434 </code>로 접속합니다.
+              </div>
             </div>
-          </div>
+          )}
 
           <NotionCard />
 
-          <div className="card flush">
+          {admin && <div className="card flush">
             <table>
               <thead>
                 <tr><th>설치된 모델</th><th style={{ width: 110 }}>파라미터</th><th style={{ width: 100 }}>크기</th><th style={{ width: 130 }}>기능</th></tr>
@@ -162,24 +171,31 @@ export default function Settings() {
               </tbody>
             </table>
             {!models.length && <div className="empty">모델 목록을 가져오지 못했습니다</div>}
-          </div>
+          </div>}
         </>
       )}
 
       {tab === 'models' && (
+        <>
+        {admin && <ChatApiKeysCard onSaved={loadModels} />}
         <div className="card">
-          <h3>모델 <span className="mute2">채팅 · 그래프 추출 · 임베딩</span></h3>
-          <div className="grid2">
-            <Field label="채팅 모델">
-              <ModelSelect list={chatModels} value={val('chat_model')} onChange={(v) => set('chat_model', v)} />
-            </Field>
-            <Field label="그래프 추출 모델" hint="빠른 모델 권장">
-              <ModelSelect list={chatModels} value={val('extract_model')} onChange={(v) => set('extract_model', v)} />
-            </Field>
-            <Field label="임베딩 모델" hint="1024차원 필요 (bge-m3)">
-              <ModelSelect list={embedModels} value={val('embed_model')} onChange={(v) => set('embed_model', v)} />
-            </Field>
-          </div>
+          <h3>
+            {admin ? '모델' : '채팅'}
+            <span className="mute2">{admin ? '채팅 · 그래프 추출 · 임베딩' : '내 대화에만 적용됩니다'}</span>
+          </h3>
+          {admin && (
+            <div className="grid2">
+              <Field label="채팅 모델">
+                <ModelSelect list={chatModels} value={val('chat_model')} onChange={(v) => set('chat_model', v)} />
+              </Field>
+              <Field label="그래프 추출 모델" hint="빠른 모델 권장">
+                <ModelSelect list={chatModels} value={val('extract_model')} onChange={(v) => set('extract_model', v)} />
+              </Field>
+              <Field label="임베딩 모델" hint="1024차원 필요 (bge-m3)">
+                <ModelSelect list={embedModels} value={val('embed_model')} onChange={(v) => set('embed_model', v)} />
+              </Field>
+            </div>
+          )}
 
           <div className="grid2" style={{ marginTop: 8 }}>
             <Field label={`temperature · ${val('temperature')}`}>
@@ -189,9 +205,11 @@ export default function Settings() {
                 onChange={(e) => set('temperature', Number(e.target.value))}
               />
             </Field>
-            <Field label="num_ctx" hint="컨텍스트 토큰">
-              <input type="number" value={val('num_ctx')} onChange={(e) => set('num_ctx', Number(e.target.value))} />
-            </Field>
+            {admin && (
+              <Field label="num_ctx" hint="컨텍스트 토큰">
+                <input type="number" value={val('num_ctx')} onChange={(e) => set('num_ctx', Number(e.target.value))} />
+              </Field>
+            )}
             <Field label="히스토리 턴 수" hint="모델에 보내는 최근 대화">
               <input type="number" value={val('history_turns')} onChange={(e) => set('history_turns', Number(e.target.value))} />
             </Field>
@@ -215,6 +233,7 @@ export default function Settings() {
             사고 과정 표시
           </Toggle>
         </div>
+        </>
       )}
 
       {tab === 'rag' && (
@@ -278,9 +297,9 @@ export default function Settings() {
             </div>
           </div>
 
-          <ExtractProviderCard val={val} set={set} />
+          {admin && <ExtractProviderCard val={val} set={set} />}
 
-          <OcrCard val={val} set={set} />
+          {admin && <OcrCard val={val} set={set} />}
 
           <div className="card row">
             <div className="grow mute2">설정을 바꾼 뒤에는 다시 색인해야 반영됩니다.</div>
@@ -378,9 +397,22 @@ function ListEditor({
   )
 }
 
+interface ChatProvider {
+  name: string
+  label: string
+  prefix: string
+  key_hint: string
+  env: string
+  configured: boolean
+  key_source: 'env' | 'db' | ''
+  key_masked: string
+  usage: { calls: number; prompt_tokens: number; completion_tokens: number; total_tokens: number }
+}
+
 interface ProviderInfo {
   current: string
   options: string[]
+  chat: ChatProvider[]
   deepseek: {
     configured: boolean
     key_source: 'env' | 'db' | ''
@@ -650,6 +682,113 @@ function DeepSeekKey({
         키는 이 서버의 DB 에 저장되고 조회 API 로는 절대 되돌려주지 않습니다(마스킹만).
         평문으로 보관되므로 DB 백업을 공유할 때는 주의하세요. <code>.env</code> 에
         <code> DEEPSEEK_API_KEY </code>를 두면 그쪽이 우선합니다.
+      </div>
+    </div>
+  )
+}
+
+function ChatApiKeysCard({ onSaved }: { onSaved: () => void }) {
+  const run = useRun()
+  const toast = useToast()
+  const [list, setList] = useState<ChatProvider[]>([])
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState('')
+
+  const load = useCallback(async () => {
+    try {
+      setList((await api.get<ProviderInfo>('/api/settings/providers')).chat ?? [])
+    } catch {
+      setList([])
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const save = async (p: ChatProvider, key: string) => {
+    setBusy(p.name)
+    const ok = await run(
+      () => api.put(`/api/settings/providers/${p.name}/key`, { key }),
+      key ? '키를 저장했습니다' : '키를 삭제했습니다',
+    )
+    setBusy('')
+    if (ok) {
+      setDrafts((d) => ({ ...d, [p.name]: '' }))
+      load()
+      onSaved()
+    }
+  }
+
+  return (
+    <div className="card">
+      <h3>
+        외부 채팅 API
+        <span className="mute2">키를 넣으면 채팅 모델 목록에 함께 나옵니다</span>
+      </h3>
+
+      {list.map((p) => (
+        <div className="field" key={p.name}>
+          <label>
+            {p.label}
+            {p.configured && <span className="badge ok" style={{ marginLeft: 8 }}>키 설정됨</span>}
+            {p.configured && <span className="mono mute2">{' '}{p.key_masked}</span>}
+            {p.usage.total_tokens > 0 && (
+              <span className="mute2">{` · 누적 ${num(p.usage.total_tokens)} 토큰`}</span>
+            )}
+          </label>
+
+          {p.key_source === 'env' ? (
+            <div className="mute2">.env 의 <code>{p.env}</code> 로 지정돼 있어 웹에서 바꿀 수 없습니다.</div>
+          ) : (
+            <div className="row">
+              <input
+                className="grow"
+                type="password"
+                autoComplete="off"
+                placeholder={p.key_hint}
+                value={drafts[p.name] ?? ''}
+                onChange={(e) => setDrafts((d) => ({ ...d, [p.name]: e.target.value }))}
+                onKeyDown={(e) => {
+                  const v = (drafts[p.name] ?? '').trim()
+                  if (e.key === 'Enter' && v) { e.preventDefault(); save(p, v) }
+                }}
+              />
+              <button
+                className="primary"
+                disabled={busy === p.name || !(drafts[p.name] ?? '').trim()}
+                onClick={() => save(p, (drafts[p.name] ?? '').trim())}
+              >
+                저장
+              </button>
+              {p.configured && (
+                <>
+                  <button
+                    disabled={busy === p.name}
+                    onClick={async () => {
+                      setBusy(p.name)
+                      const r = await run(() => api.post<any>(`/api/settings/providers/${p.name}/test`))
+                      setBusy('')
+                      if (r) toast(r.ok ? `연결 성공 (${r.model})` : `실패: ${r.error}`, !r.ok)
+                    }}
+                  >
+                    테스트
+                  </button>
+                  <button
+                    className="danger"
+                    disabled={busy === p.name}
+                    onClick={() => confirm(`${p.label} 키를 삭제할까요?`) && save(p, '')}
+                  >
+                    삭제
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+
+      <div className="mute2">
+        키는 서버 DB 에 평문으로 저장되고 조회 API 로는 되돌려주지 않습니다(마스킹만).
+        모델 목록은 각 제공자 API 에서 직접 가져옵니다.
       </div>
     </div>
   )

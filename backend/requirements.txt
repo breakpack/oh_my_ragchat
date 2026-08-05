@@ -5,6 +5,8 @@ psycopg[binary,pool]==3.3.4
 pgvector==0.5.0
 pydantic-settings==2.14.2
 python-multipart==0.0.32
+# Claude(Anthropic) 채팅 모델. OpenAI·DeepSeek 은 OpenAI 호환이라 httpx 로 직접 부른다
+anthropic==0.120.2
 itsdangerous==2.2.0
 watchdog==6.0.0
 pypdf==6.14.2

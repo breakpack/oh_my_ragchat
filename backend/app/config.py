@@ -90,6 +90,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "file_unlock_minutes": 10,
 }
 
+# 서버 전체에 적용되는 설정 (관리자만 변경, 모든 사용자가 공유).
+# 모델 선택·외부 API·비용은 개인이 각자 바꿀 성질이 아니다.
+ADMIN_SETTINGS = frozenset({
+    "ollama_base_url", "chat_model", "extract_model", "embed_model", "num_ctx",
+    "extract_provider", "extract_max_entities", "extract_max_relations",
+    "deepseek_model", "deepseek_base_url", "deepseek_concurrency",
+    "deepseek_max_input_chars", "deepseek_max_output_tokens", "deepseek_token_budget",
+    "rag_ocr_enabled", "rag_ocr_langs", "rag_ocr_min_chars",
+})
+
 RAG_MODES = ("naive", "local", "global", "hybrid")
 EXTRACT_PROVIDERS = ("local", "deepseek")
 

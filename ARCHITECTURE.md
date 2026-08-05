@@ -182,10 +182,20 @@ secrets(key, value, updated_at)                -- API 키. app_settings 와 분�
 - 페르소나: `system_prompt` + 모델 + temperature 묶음. 세션 생성 시 선택.
 - 프롬프트 우선순위: 페르소나 system prompt → RAG 컨텍스트 지시문 → 대화 히스토리.
 - 히스토리는 최근 N 턴(설정값, 기본 12턴)만 전송.
-- **모델 선택**: Ollama 모델과 DeepSeek 모델을 같은 목록에서 고른다. DeepSeek 은 이름 앞에
-  `deepseek/` 를 붙여 구분하고(`deepseek/deepseek-chat`), 라우터가 그 접두어를 보고
-  스트리밍 경로를 나눈다. `deepseek-reasoner` 의 `reasoning_content` 는 thinking 이벤트로
-  매핑한다. DeepSeek 은 vision 이 없으므로 첨부 이미지는 보내지 않고 OCR 텍스트만 넘긴다.
+- **모델 선택**: 로컬(Ollama)과 외부 API 모델을 같은 목록에서 고른다. 외부 모델은 이름 앞에
+  제공자 접두어를 붙여 구분하고(`deepseek/deepseek-chat`, `openai/gpt-…`,
+  `anthropic/claude-…`), 라우터가 그 접두어를 보고 스트리밍 경로를 나눈다.
+  - `deepseek.py` — DeepSeek. 그래프 추출까지 겸한다. `reasoning_content` 를 thinking
+    이벤트로 매핑. vision 이 없어 첨부 이미지는 보내지 않고 OCR 텍스트만 넘긴다.
+  - `remote.py` — OpenAI · Claude(채팅 전용). **모델 이름은 상수로 박지 않고 각 제공자의
+    모델 API 로 조회**해 5분 캐시한다(하드코딩하면 금방 낡는다). 둘 다 vision 이 되므로
+    첨부 이미지를 base64 블록으로 실어 보낸다(확장자를 잃어 base64 앞머리로 종류를 추정).
+    Claude 는 공식 `anthropic` SDK 로 스트리밍하고 4.6+ 모델에만 adaptive thinking 을
+    붙인다(구형은 `budget_tokens` 방식이라 400 이 난다). 최신 모델이 기본값 외
+    `temperature` 를 거부하므로 Claude 에는 아예 안 보내고, OpenAI 는 400 이 나면
+    한 번 빼고 재시도한다.
+  - 키는 `public.global_secrets` 에 두고 관리자만 바꾼다. 어떤 API 로도 원문을 돌려주지 않는다.
+  - Ollama 가 꺼져 있어도 `/api/settings/models` 는 외부 모델만이라도 돌려준다.
 - **첨부**: NAS 경로 또는 브라우저 업로드(base64) 둘 다 받는다. 이미지는 Ollama 메시지의
   `images` 필드로, 그 외는 추출한 본문을 프롬프트에 인라인한다.
   이미지는 **OCR 결과도 함께** 넘긴다 — `vision` 능력을 광고하면서 실제로는 이미지를
@@ -253,17 +263,24 @@ GET    /api/rag/events                 인덱싱 진행률 SSE (EventSource)
 POST   /api/rag/scan                   주기 스캔을 기다리지 않고 즉시 대조
 
 GET/PUT /api/settings                  설정 전체 조회/부분 저장
-GET    /api/settings/models            Ollama 모델 목록 프록시
-GET    /api/settings/providers         추출 제공자 상태 + 토큰 사용량
+GET    /api/settings/models            모델 목록 (Ollama + 외부 API)
+GET    /api/settings/providers         제공자 상태 + 토큰 사용량
 POST   /api/settings/providers/deepseek/test   키 동작 확인 (최소 토큰)
+PUT    /api/settings/providers/{name}/key      OpenAI/Claude 키 저장·삭제 (관리자)
+POST   /api/settings/providers/{name}/test     키 동작 확인 (관리자)
 GET    /api/health                     db / ollama 헬스체크
 ```
 
 ## 9. 설정 페이지 항목
 
-- 연결: Ollama base URL, 헬스 상태, 모델 목록
-- 모델: 채팅 모델, 추출 모델, 임베딩 모델, temperature, num_ctx, 히스토리 턴 수,
-  첨부 최대 크기, 이미지 첨부 OCR 병행 여부
+**관리자/일반 분리** — `ADMIN_SETTINGS`(모델·외부 API·OCR)는 `public.global_settings` 에
+서버 전체 값으로 저장되고 관리자만 바꾼다(비관리자가 PUT 하면 403). 나머지는 사용자
+스키마의 `app_settings` 에 개인 값으로 들어간다. `GET /api/settings` 는 기본값 ← 전역 ←
+개인 순으로 합쳐 돌려주고 `is_admin` 을 같이 실어, 프론트는 그걸로 탭과 카드를 숨긴다.
+
+- 연결: Ollama base URL·모델 목록(관리자), Notion 토큰(개인), 헬스 상태
+- 모델: 채팅/추출/임베딩 모델·num_ctx·외부 채팅 API 키(관리자),
+  temperature·히스토리 턴 수·첨부 최대 크기·이미지 첨부 OCR·사고 과정 표시(개인)
 - RAG: 감시 폴더 목록, 청크 크기/오버랩, top-k(청크·엔티티·관계·키워드), 기본 검색 모드,
   기본 RAG 토글, 잠긴 파일 인덱싱 여부, 키워드 검색 병행, OCR(사용 여부·언어·스캔본 판정 기준),
   전체 재인덱싱 버튼
