@@ -9,13 +9,14 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import httpx
 
-from .. import db, deepseek, events, flags, jobs, notion, ollama, paths, security
-from ..config import IMAGE_EXTS, INDEXABLE_EXTS, env
+from .. import ctx, db, deepseek, events, flags, jobs, notion, ollama, paths, security
+from ..config import IMAGE_EXTS, INDEXABLE_EXTS
 from . import chunk as chunker
 from . import extract as extractor
 from . import graph
@@ -23,6 +24,11 @@ from . import graph
 log = logging.getLogger("chatchat.rag.index")
 
 EMBED_BATCH = 16
+
+
+@contextmanager
+def _noop():
+    yield
 
 
 def _sha256(path: Path) -> str:
@@ -108,7 +114,7 @@ def index_document(rel: str, cfg: dict, *, force: bool = False,
                    client: httpx.Client | None = None) -> str:
     """단일 문서 인덱싱. 반환값은 최종 status."""
     rel = paths.normalize(rel)
-    abs_path = env.nas_root / rel
+    abs_path = paths.root() / rel
 
     if not abs_path.is_file():
         delete_document(rel)
@@ -288,13 +294,15 @@ def _build_graph_parallel(doc_id: int, rel: str, rows: list[dict], cfg: dict,
     fell_back = False
     try:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {
-                pool.submit(
-                    graph.extract, row["content"], cfg,
-                    provider="deepseek", ds_client=ds_client,
-                ): row
-                for row in rows
-            }
+            # ThreadPoolExecutor 는 ContextVar 를 물려주지 않는다. 사용량 기록이
+            # 남의 스키마로 가지 않도록 스레드 안에서 다시 심어 준다.
+            user = ctx.get()
+
+            def run(content: str):
+                with ctx.as_user(user) if user else _noop():
+                    return graph.extract(content, cfg, provider="deepseek", ds_client=ds_client)
+
+            futures = {pool.submit(run, row["content"]): row for row in rows}
             for n, fut in enumerate(as_completed(futures), 1):
                 row = futures[fut]
                 try:
@@ -419,7 +427,7 @@ def scan(cfg: dict, *, force: bool = False) -> dict:
 
     on_disk: dict[str, tuple[float, int]] = {}
     for wdir in watch:
-        base = env.nas_root / wdir if wdir else env.nas_root
+        base = paths.root() / wdir if wdir else paths.root()
         if not base.is_dir():
             continue
         for dirpath, dirnames, filenames in os.walk(base):

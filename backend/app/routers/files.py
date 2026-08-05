@@ -179,7 +179,7 @@ async def upload(
                 dest = paths.resolve(rel, must_exist=False)
                 n += 1
 
-        tmp = env.tmp_root / f"up-{time.time_ns()}-{name}"
+        tmp = paths.tmp_root() / f"up-{time.time_ns()}-{name}"
         size = 0
         try:
             with tmp.open("wb") as fp:
@@ -250,12 +250,12 @@ def delete(body: DeleteIn, cfg: deps.Settings) -> dict:
     was_dir = target.is_dir()  # 이동 후에는 확인할 수 없다
 
     if cfg["nas_use_trash"]:
-        env.trash_root.mkdir(parents=True, exist_ok=True)
+        paths.trash_root()
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        dest = env.trash_root / f"{stamp}__{rel.replace('/', '__')}"
+        dest = paths.trash_root() / f"{stamp}__{rel.replace('/', '__')}"
         n = 1
         while dest.exists():
-            dest = env.trash_root / f"{stamp}-{n}__{rel.replace('/', '__')}"
+            dest = paths.trash_root() / f"{stamp}-{n}__{rel.replace('/', '__')}"
             n += 1
         shutil.move(str(target), str(dest))
         where = "trash"
@@ -432,8 +432,7 @@ def set_flags(body: FlagsIn, cfg: deps.Settings) -> dict:
 
 @router.get("/trash")
 def list_trash() -> dict:
-    root = env.trash_root
-    root.mkdir(parents=True, exist_ok=True)
+    root = paths.trash_root()
     items = []
     for child in sorted(root.iterdir(), key=lambda p: p.name, reverse=True):
         try:
@@ -458,7 +457,7 @@ class TrashIn(BaseModel):
 @router.post("/trash/restore")
 def restore_trash(body: TrashIn, cfg: deps.Settings) -> dict:
     name = paths.check_name(body.name)
-    src = env.trash_root / name
+    src = paths.trash_root() / name
     if not src.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="휴지통에 없습니다")
 
@@ -477,8 +476,7 @@ def restore_trash(body: TrashIn, cfg: deps.Settings) -> dict:
 @router.delete("/trash")
 def empty_trash(body: TrashIn | None = Body(None)) -> dict:
     """name 을 주면 그 항목만, 없으면 휴지통 전체를 비운다."""
-    root = env.trash_root
-    root.mkdir(parents=True, exist_ok=True)
+    root = paths.trash_root()
     targets = [root / paths.check_name(body.name)] if body and body.name else list(root.iterdir())
     removed = 0
     for t in targets:

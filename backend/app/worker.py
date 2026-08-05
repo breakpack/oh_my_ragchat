@@ -14,7 +14,8 @@ import time
 
 import httpx
 
-from . import db, jobs, paths
+from . import ctx, db, jobs, paths, security
+from .config import env
 from .rag import index
 
 logging.basicConfig(
@@ -37,6 +38,7 @@ def _stop(signum, _frame) -> None:
 
 
 def handle(job: dict, client: httpx.Client) -> None:
+    """잡 하나. 반드시 그 잡 주인의 컨텍스트 안에서 돈다 (스키마·저장소가 갈린다)."""
     kind = job["kind"]
     payload = job["payload"] or {}
     cfg = db.get_settings()
@@ -68,7 +70,7 @@ def main() -> None:
     paths.ensure_dirs()
     _wait_for_db()
 
-    log.info("worker 시작 (스캔 주기 %ds, nas=%s)", SCAN_SECONDS, paths.root())
+    log.info("worker 시작 (스캔 주기 %ds, storage=%s)", SCAN_SECONDS, env.nas_root)
     revived = jobs.requeue_running()
     if revived:
         log.info("중단됐던 잡 %d건을 큐로 되돌렸습니다", revived)
@@ -80,20 +82,29 @@ def main() -> None:
             now = time.monotonic()
             if now - last_scan >= SCAN_SECONDS:
                 last_scan = now
-                try:
-                    result = index.scan(db.get_settings())
-                    if result["queued"] or result["removed"]:
-                        log.info("스캔: %s", result)
-                except Exception:  # noqa: BLE001 - 스캔 실패로 워커가 죽으면 안 된다
-                    log.exception("스캔 실패")
+                for user in security.list_users():
+                    try:
+                        with ctx.as_user(security.get_user(user["id"])):
+                            paths.ensure_dirs()
+                            result = index.scan(db.get_settings())
+                            if result["queued"] or result["removed"]:
+                                log.info("스캔 %s: %s", user["username"], result)
+                    except Exception:  # noqa: BLE001 - 한 사용자 실패로 워커가 죽으면 안 된다
+                        log.exception("스캔 실패 (%s)", user["username"])
 
             job = jobs.claim()
             if job is None:
                 time.sleep(IDLE_SLEEP)
                 continue
 
+            user = security.get_user(job["user_id"])
+            if user is None:  # 사용자가 지워졌으면 잡도 의미가 없다
+                jobs.finish(job["id"], error="사용자가 없습니다")
+                continue
+
             try:
-                handle(job, client)
+                with ctx.as_user(user):
+                    handle(job, client)
                 jobs.finish(job["id"])
             except Exception as exc:  # noqa: BLE001
                 log.exception("잡 %s(%s) 실패", job["id"], job["kind"])

@@ -3,6 +3,7 @@ import { api } from '../api'
 import { Field, useRun } from '../ui'
 
 export default function Auth({ configured, onDone }: { configured: boolean; onDone: () => void }) {
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [busy, setBusy] = useState(false)
@@ -16,7 +17,9 @@ export default function Auth({ configured, onDone }: { configured: boolean; onDo
     }
     setBusy(true)
     const ok = await run(() =>
-      configured ? api.post('/api/auth/login', { password }) : api.post('/api/auth/setup', { password }),
+      configured
+        ? api.post('/api/auth/login', { username, password })
+        : api.post('/api/auth/setup', { username, password }),
     )
     setBusy(false)
     if (ok) onDone()
@@ -27,14 +30,24 @@ export default function Auth({ configured, onDone }: { configured: boolean; onDo
       <form className="card" onSubmit={submit}>
         <h1>chatchat</h1>
         <p className="mute2" style={{ marginTop: 0 }}>
-          {configured ? '비밀번호를 입력해 잠금을 해제하세요.' : '처음 실행입니다. 사용할 비밀번호를 정하세요.'}
+          {configured
+            ? '아이디와 비밀번호를 입력하세요.'
+            : '처음 실행입니다. 관리자 계정을 만드세요. 이후 계정은 설정에서 추가합니다.'}
         </p>
+
+        <Field label="아이디">
+          <input
+            value={username}
+            autoFocus
+            autoComplete="username"
+            onChange={(e) => setUsername(e.target.value)}
+          />
+        </Field>
 
         <Field label="비밀번호">
           <input
             type="password"
             value={password}
-            autoFocus
             autoComplete={configured ? 'current-password' : 'new-password'}
             onChange={(e) => setPassword(e.target.value)}
           />
@@ -51,8 +64,8 @@ export default function Auth({ configured, onDone }: { configured: boolean; onDo
           </Field>
         )}
 
-        <button className="primary" style={{ width: '100%' }} disabled={busy || !password}>
-          {busy ? '처리 중…' : configured ? '들어가기' : '시작하기'}
+        <button className="primary" style={{ width: '100%' }} disabled={busy || !username || !password}>
+          {busy ? '처리 중…' : configured ? '들어가기' : '관리자 계정 만들기'}
         </button>
       </form>
     </div>

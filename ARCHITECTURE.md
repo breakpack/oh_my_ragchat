@@ -1,6 +1,30 @@
-# chatchat — 개인용 NAS + Graph RAG + 로컬 LLM 채팅
+# chatchat — NAS + Graph RAG + 로컬 LLM 채팅
 
-Mac mini M4 (32GB) 에서 Docker Compose 로 돌아가는 단일 사용자 웹서비스.
+Mac mini M4 (32GB) 에서 Docker Compose 로 돌아가는 다중 사용자 웹서비스.
+
+## 0. 사용자 격리
+
+사용자마다 **Postgres 스키마 하나(`u<id>`)와 저장소 디렉터리 하나**를 갖는다.
+
+```
+public          users, jobs(user_id), schema_migrations
+u1 / u2 / …     app_settings, secrets, path_flags, personas, chat_*, documents,
+                chunks, entities, relations, chunk_entities, llm_usage
+저장소           <NAS_HOST_PATH>/<username>/{nas,trash,tmp}
+```
+
+모든 테이블에 `user_id` 를 붙이는 대신 스키마를 나눈 이유는 단순하다. 조건을 붙여야 할
+쿼리가 40개가 넘고, 한 군데만 빠뜨려도 남의 문서가 새어 나간다. 스키마를 나누면
+`search_path` 하나로 격리되고 기존 쿼리는 손대지 않아도 된다.
+
+요청마다 `deps.current_user` 가 쿠키에서 사용자를 복원해 `ctx` (ContextVar)에 심고,
+`db.cursor()` 가 그걸 읽어 `search_path` 를 건다. 워커는 잡의 `user_id` 로 같은 일을 한다.
+
+> `current_user` 는 반드시 `async` 여야 한다. 동기 의존성은 각각 별도 스레드에서
+> 컨텍스트 *복사본* 위로 돌기 때문에, 거기서 ContextVar 를 세팅해도 나머지 요청
+> 처리에는 보이지 않는다(실제로 이것 때문에 500 이 났다).
+
+첫 사용자는 자동으로 관리자가 되고, 이후 계정은 관리자만 만든다(공개 가입 없음).
 
 ## 1. 실행 형태
 
@@ -182,9 +206,9 @@ api  ←────────────────────────
 이벤트는 `document`(상태 전환) / `progress`(단계별 done·total) / `scan`(신규·삭제 수).
 페이로드 8000바이트 제한이 있어 요약 정보만 담고, 프론트는 30초 폴링을 안전망으로 함께 둔다.
 
-## 7. 보안 모델 (단일 사용자)
+## 7. 보안 모델
 
-- **로그인**: 비밀번호 1개. `hashlib.scrypt` (stdlib, 외부 의존성 없음) 로 해시.
+- **로그인**: 아이디+비밀번호. `hashlib.scrypt` (stdlib, 외부 의존성 없음) 로 해시.
   성공 시 `itsdangerous` 로 서명한 HttpOnly 세션 쿠키 발급(기본 30일).
   첫 실행 시 비밀번호 미설정 상태이며 최초 접속에서 설정한다.
 - **7번 숨김 폴더**: `path_flags.hidden`. 목록 API 는 기본적으로 숨김 항목을 제외하고,

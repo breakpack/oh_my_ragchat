@@ -355,6 +355,12 @@ tbody tr:hover { background: var(--n-page); }
 }
 .nav a:hover { background: var(--n-page); color: var(--fg); text-decoration: none; }
 .nav a.active { background: var(--blue-tint); color: var(--primary); }
+.nav .who-mini {
+  width: 32px; height: 32px; border-radius: var(--r-full);
+  display: grid; place-items: center; margin-bottom: var(--sp-md);
+  background: var(--blue-tint); color: var(--primary);
+  font-size: 12px; font-weight: 700;
+}
 
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 

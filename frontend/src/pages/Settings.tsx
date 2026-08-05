@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, fmtSize, type Persona } from '../api'
 import { Field, Modal, Toggle, useRun, useToast } from '../ui'
 
-type Tab = 'conn' | 'models' | 'rag' | 'nas' | 'security' | 'personas'
+type Tab = 'conn' | 'models' | 'rag' | 'nas' | 'security' | 'personas' | 'users'
 
 interface ModelInfo {
   name: string
@@ -97,6 +97,7 @@ export default function Settings() {
           ['nas', 'NAS'],
           ['security', '보안'],
           ['personas', '페르소나'],
+          ['users', '사용자'],
         ] as [Tab, string][]).map(([t, label]) => (
           <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{label}</button>
         ))}
@@ -295,6 +296,8 @@ export default function Settings() {
       {tab === 'security' && <SecurityTab val={val} set={set} />}
 
       {tab === 'personas' && <PersonasTab models={chatModels.map((m) => m.name)} />}
+
+      {tab === 'users' && <UsersTab />}
     </div>
   )
 }
@@ -746,6 +749,106 @@ function NotionCard() {
   )
 }
 
+
+interface AppUser {
+  id: number
+  username: string
+  display_name: string | null
+  is_admin: boolean
+  created_at: string
+}
+
+function UsersTab() {
+  const run = useRun()
+  const [users, setUsers] = useState<AppUser[] | null>(null)
+  const [denied, setDenied] = useState(false)
+  const [form, setForm] = useState({ username: '', password: '', display_name: '', is_admin: false })
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const r = await api.get<{ users: AppUser[] }>('/api/auth/users')
+      setUsers(r.users)
+    } catch (e: any) {
+      if (e?.status === 403) setDenied(true)
+      setUsers([])
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  if (denied) {
+    return <div className="card mute2">관리자만 계정을 관리할 수 있습니다.</div>
+  }
+
+  const create = async () => {
+    setBusy(true)
+    const ok = await run(() => api.post('/api/auth/users', form), '계정을 만들었습니다')
+    setBusy(false)
+    if (ok) {
+      setForm({ username: '', password: '', display_name: '', is_admin: false })
+      load()
+    }
+  }
+
+  return (
+    <>
+      <div className="card">
+        <h3>계정 추가<span className="mute2">사용자마다 저장소와 지식 그래프가 완전히 분리됩니다</span></h3>
+        <div className="grid2">
+          <Field label="아이디" hint="3자 이상, 저장소 폴더 이름이 됩니다">
+            <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+          </Field>
+          <Field label="표시 이름">
+            <input value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
+          </Field>
+          <Field label="비밀번호" hint="4자 이상">
+            <input type="password" value={form.password} autoComplete="new-password"
+                   onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          </Field>
+        </div>
+        <div className="row">
+          <Toggle checked={form.is_admin} onChange={(v) => setForm({ ...form, is_admin: v })}>
+            관리자 권한
+          </Toggle>
+          <button className="primary right" disabled={busy || !form.username || !form.password} onClick={create}>
+            {busy ? '만드는 중…' : '계정 만들기'}
+          </button>
+        </div>
+      </div>
+
+      <div className="card flush">
+        <table>
+          <thead>
+            <tr><th>아이디</th><th style={{ width: 160 }}>이름</th><th style={{ width: 90 }}>권한</th><th style={{ width: 90 }} /></tr>
+          </thead>
+          <tbody>
+            {(users ?? []).map((u) => (
+              <tr key={u.id}>
+                <td className="mono">{u.username}</td>
+                <td className="mute2">{u.display_name || '-'}</td>
+                <td>{u.is_admin ? <span className="badge on">관리자</span> : <span className="badge">일반</span>}</td>
+                <td>
+                  <button
+                    className="ghost sm danger"
+                    onClick={async () => {
+                      if (!confirm(`'${u.username}' 계정과 그 사용자의 색인·대화를 모두 지웁니다. 저장소 파일은 남습니다. 계속할까요?`)) return
+                      await run(() => api.del(`/api/auth/users/${u.id}`), '삭제했습니다')
+                      load()
+                    }}
+                  >
+                    삭제
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {users !== null && !users.length && <div className="empty">계정이 없습니다</div>}
+      </div>
+    </>
+  )
+}
 
 function OcrCard({ val, set }: { val: (k: string) => any; set: (k: string, v: any) => void }) {
   const [ocr, setOcr] = useState<{ available: boolean; langs: string[] } | null>(null)

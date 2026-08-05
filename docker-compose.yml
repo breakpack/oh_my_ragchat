@@ -31,12 +31,8 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-chatchat}:${POSTGRES_PASSWORD:-chatchat}@db:5432/${POSTGRES_DB:-chatchat}
       NAS_ROOT: /data/nas
-      TRASH_ROOT: /data/trash
-      TMP_ROOT: /data/tmp
     volumes:
       - ${NAS_HOST_PATH:-./data/nas}:/data/nas
-      - ./data/trash:/data/trash
-      - ./data/tmp:/data/tmp
       - ./db/migrations:/srv/migrations:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -54,12 +50,8 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-chatchat}:${POSTGRES_PASSWORD:-chatchat}@db:5432/${POSTGRES_DB:-chatchat}
       NAS_ROOT: /data/nas
-      TRASH_ROOT: /data/trash
-      TMP_ROOT: /data/tmp
     volumes:
       - ${NAS_HOST_PATH:-./data/nas}:/data/nas
-      - ./data/trash:/data/trash
-      - ./data/tmp:/data/tmp
       - ./db/migrations:/srv/migrations:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"

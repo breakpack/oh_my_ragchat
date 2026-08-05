@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from . import db
+from . import ctx, db
 
 INDEX_DOCUMENT = "index_document"
 DELETE_DOCUMENT = "delete_document"
@@ -17,16 +17,19 @@ REINDEX_ALL = "reindex_all"
 INDEX_NOTION = "index_notion"
 
 
-def enqueue(kind: str, payload: dict[str, Any] | None = None) -> int | None:
+def enqueue(kind: str, payload: dict[str, Any] | None = None,
+            user_id: int | None = None) -> int | None:
+    """잡 큐는 public 에 하나만 두고 user_id 로 주인을 구분한다."""
     payload = payload or {}
-    with db.cursor() as cur:
+    uid = user_id or ctx.require().id
+    with db.cursor(schema="public") as cur:
         cur.execute(
             """
-            INSERT INTO jobs (kind, payload) VALUES (%s, %s)
+            INSERT INTO jobs (user_id, kind, payload) VALUES (%s, %s, %s)
             ON CONFLICT DO NOTHING
             RETURNING id
             """,
-            (kind, json.dumps(payload)),
+            (uid, kind, json.dumps(payload)),
         )
         row = cur.fetchone()
     return row["id"] if row else None
@@ -54,7 +57,7 @@ def claim(kinds: tuple[str, ...] | None = None) -> dict[str, Any] | None:
            SET status = 'running', attempts = j.attempts + 1, started_at = now()
           FROM picked
          WHERE j.id = picked.id
-        RETURNING j.id, j.kind, j.payload, j.attempts
+        RETURNING j.id, j.user_id, j.kind, j.payload, j.attempts
     """
     params: tuple = ()
     if kinds:
@@ -63,13 +66,13 @@ def claim(kinds: tuple[str, ...] | None = None) -> dict[str, Any] | None:
     else:
         sql = sql.format(kind_filter="")
 
-    with db.cursor() as cur:
+    with db.cursor(schema="public") as cur:
         cur.execute(sql, params)
         return cur.fetchone()
 
 
 def finish(job_id: int, error: str | None = None) -> None:
-    with db.cursor() as cur:
+    with db.cursor(schema="public") as cur:
         cur.execute(
             """
             UPDATE jobs
@@ -81,7 +84,7 @@ def finish(job_id: int, error: str | None = None) -> None:
 
 
 def retry_failed() -> int:
-    with db.cursor() as cur:
+    with db.cursor(schema="public") as cur:
         cur.execute(
             """
             UPDATE jobs SET status = 'queued', error = NULL, done_at = NULL
@@ -91,9 +94,13 @@ def retry_failed() -> int:
         return cur.rowcount
 
 
-def stats() -> dict[str, int]:
-    with db.cursor(commit=False) as cur:
-        cur.execute("SELECT status, count(*) AS n FROM jobs GROUP BY status")
+def stats(user_id: int | None = None) -> dict[str, int]:
+    uid = user_id or (ctx.get().id if ctx.get() else None)
+    with db.cursor(commit=False, schema="public") as cur:
+        if uid:
+            cur.execute("SELECT status, count(*) AS n FROM jobs WHERE user_id = %s GROUP BY status", (uid,))
+        else:
+            cur.execute("SELECT status, count(*) AS n FROM jobs GROUP BY status")
         return {r["status"]: r["n"] for r in cur.fetchall()}
 
 
@@ -103,7 +110,7 @@ def requeue_running() -> int:
     (SIGTERM 으로 중단된 잡을 되살리지 않으면 sweep_stale 의 시간 조건에 걸릴 때까지
     영영 running 으로 남아 큐가 막힌다)
     """
-    with db.cursor() as cur:
+    with db.cursor(schema="public") as cur:
         cur.execute(
             "UPDATE jobs SET status = 'queued', started_at = NULL WHERE status = 'running'"
         )
@@ -112,7 +119,7 @@ def requeue_running() -> int:
 
 def sweep_stale(minutes: int = 60) -> int:
     """워커가 죽어서 running 인 채 방치된 잡을 되살린다."""
-    with db.cursor() as cur:
+    with db.cursor(schema="public") as cur:
         cur.execute(
             """
             UPDATE jobs SET status = 'queued'

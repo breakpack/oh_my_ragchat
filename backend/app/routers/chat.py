@@ -65,7 +65,7 @@ ATTACH_TEXT_LIMIT = 20000  # 텍스트 첨부를 프롬프트에 넣을 때의 �
 
 def _ocr_bytes(raw: bytes, ext: str, name: str, cfg: dict) -> str:
     """이미지 바이트를 임시 파일로 떨궈 OCR. 실패해도 첨부 자체는 계속 진행한다."""
-    tmp = env.tmp_root / f"ocr-{time.time_ns()}{ext or '.png'}"
+    tmp = paths.tmp_root() / f"ocr-{time.time_ns()}{ext or '.png'}"
     try:
         tmp.write_bytes(raw)
         return extractor.extract(tmp, cfg).text.strip()
@@ -139,7 +139,7 @@ def _prepare_attachments(
             if rel:
                 text = extractor.extract(paths.resolve(rel), cfg).text
             else:
-                tmp = env.tmp_root / f"attach-{time.time_ns()}{ext or '.txt'}"
+                tmp = paths.tmp_root() / f"attach-{time.time_ns()}{ext or '.txt'}"
                 tmp.write_bytes(raw or b"")
                 try:
                     text = extractor.extract(tmp, cfg).text

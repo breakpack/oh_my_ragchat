@@ -10,6 +10,9 @@ from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from pathlib import Path
+
+from . import ctx
 from .config import DEFAULT_SETTINGS, env
 
 _pool: ConnectionPool | None = None
@@ -40,12 +43,35 @@ def conn() -> Iterator[Any]:
 
 
 @contextmanager
-def cursor(commit: bool = True) -> Iterator[Any]:
+def cursor(commit: bool = True, schema: str | None = None) -> Iterator[Any]:
+    """커서 하나. search_path 를 현재 사용자 스키마로 맞춰서 준다.
+
+    풀에서 꺼낸 커넥션은 재사용되므로 매번 설정한다. schema="public" 을 주면
+    사용자와 무관한 테이블(users/jobs)을 다룬다.
+    """
+    if schema is None:
+        user = ctx.get()
+        schema = user.schema if user else "public"
     with pool().connection() as c:
         with c.cursor() as cur:
+            cur.execute(f'SET search_path TO "{schema}", public')
             yield cur
         if commit:
             c.commit()
+
+
+def create_user_schema(user_id: int) -> str:
+    """새 사용자의 테이블 일습을 만든다."""
+    schema = ctx.schema_for(user_id)
+    ddl = (Path(__file__).parent / "user_schema.sql").read_text(encoding="utf-8")
+    with cursor(schema="public") as cur:
+        cur.execute(ddl.replace("{schema}", schema))
+    return schema
+
+
+def drop_user_schema(user_id: int) -> None:
+    with cursor(schema="public") as cur:
+        cur.execute(f'DROP SCHEMA IF EXISTS "{ctx.schema_for(user_id)}" CASCADE')
 
 
 def close_pool() -> None:

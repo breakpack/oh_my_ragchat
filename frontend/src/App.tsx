@@ -9,9 +9,17 @@ import Jobs from './pages/Jobs'
 import Notion from './pages/Notion'
 import Settings from './pages/Settings'
 
+export interface SessionUser {
+  id: number
+  username: string
+  display_name: string | null
+  is_admin: boolean
+}
+
 interface Me {
   configured: boolean
   authenticated: boolean
+  user: SessionUser | null
 }
 
 export default function App() {
@@ -21,7 +29,7 @@ export default function App() {
     try {
       setMe(await api.get<Me>('/api/auth/me'))
     } catch {
-      setMe({ configured: true, authenticated: false })
+      setMe({ configured: true, authenticated: false, user: null })
     }
   }, [])
 
@@ -57,6 +65,11 @@ export default function App() {
           </NavLink>
         ))}
         <div style={{ flex: 1 }} />
+        {me.user && (
+          <div className="who-mini" title={`${me.user.display_name || me.user.username}${me.user.is_admin ? ' (관리자)' : ''}`}>
+            {(me.user.display_name || me.user.username).slice(0, 2)}
+          </div>
+        )}
         <button
           className="ghost sm"
           aria-label="로그아웃"

@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 
 from fastapi import HTTPException, status
 
+from . import ctx
 from .config import env
 
 _BAD_NAMES = {"", ".", ".."}
@@ -20,8 +21,30 @@ class PathError(HTTPException):
         super().__init__(status.HTTP_400_BAD_REQUEST, detail=detail)
 
 
+def user_dir() -> Path:
+    """사용자 전용 디렉터리. 없으면 만든다."""
+    user = ctx.get()
+    base = env.nas_root / (user.username if user else "_shared")
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 def root() -> Path:
-    return env.nas_root.resolve()
+    r = user_dir() / "nas"
+    r.mkdir(parents=True, exist_ok=True)
+    return r.resolve()
+
+
+def trash_root() -> Path:
+    p = user_dir() / "trash"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def tmp_root() -> Path:
+    p = user_dir() / "tmp"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 def normalize(rel: str | None) -> str:
@@ -94,5 +117,8 @@ def is_under(rel: str, ancestor: str) -> bool:
 
 
 def ensure_dirs() -> None:
-    for p in (env.nas_root, env.trash_root, env.tmp_root):
-        p.mkdir(parents=True, exist_ok=True)
+    """현재 사용자의 디렉터리 일습. 사용자 컨텍스트가 없으면 최상위만 만든다."""
+    env.nas_root.mkdir(parents=True, exist_ok=True)
+    if ctx.get() is not None:
+        for p in (root(), trash_root(), tmp_root()):
+            p.mkdir(parents=True, exist_ok=True)

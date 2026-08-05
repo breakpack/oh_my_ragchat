@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from . import db, migrate, ollama, paths
+from .config import env
 from .routers.auth import router as auth_router
 from .routers.chat import router as chat_router
 from .routers.files import router as files_router
@@ -27,10 +28,10 @@ log = logging.getLogger("chatchat.api")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    paths.ensure_dirs()
+    paths.ensure_dirs()  # 최상위 저장소 루트만 (사용자별 디렉터리는 로그인 때)
     db.pool()  # 부팅 시 커넥션 확보 실패를 바로 드러낸다
     migrate.run()
-    log.info("api ready (nas=%s)", paths.root())
+    log.info("api ready (storage=%s)", env.nas_root)
     yield
     db.close_pool()
 
@@ -65,19 +66,15 @@ async def health() -> JSONResponse:
     if not result["ollama"]["ok"]:
         result["ok"] = False
 
+    # 헬스체크는 로그인 전에도 열리므로 사용자 데이터는 만지지 않는다
     try:
-        with db.cursor(commit=False) as cur:
+        with db.cursor(commit=False, schema="public") as cur:
             cur.execute(
                 """
-                SELECT
-                  (SELECT count(*) FROM documents)              AS documents,
-                  (SELECT count(*) FROM documents WHERE status = 'ready') AS ready,
-                  (SELECT count(*) FROM chunks)                 AS chunks,
-                  (SELECT count(*) FROM entities)               AS entities,
-                  (SELECT count(*) FROM relations)              AS relations,
-                  (SELECT count(*) FROM jobs WHERE status = 'queued')  AS queued,
-                  (SELECT count(*) FROM jobs WHERE status = 'running') AS running,
-                  (SELECT count(*) FROM jobs WHERE status = 'failed')  AS failed
+                SELECT (SELECT count(*) FROM users) AS users,
+                       (SELECT count(*) FROM jobs WHERE status = 'queued')  AS queued,
+                       (SELECT count(*) FROM jobs WHERE status = 'running') AS running,
+                       (SELECT count(*) FROM jobs WHERE status = 'failed')  AS failed
                 """
             )
             result["stats"] = cur.fetchone()

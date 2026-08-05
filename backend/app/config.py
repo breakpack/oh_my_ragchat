@@ -18,9 +18,8 @@ class Env(BaseSettings):
     database_url: str = "postgresql://chatchat:chatchat@db:5432/chatchat"
     secret_key: str = "dev-insecure-key"
 
+    # 저장소 최상위. 이 아래에 사용자별로 <username>/{nas,trash,tmp} 가 생긴다.
     nas_root: Path = Path("/data/nas")
-    trash_root: Path = Path("/data/trash")
-    tmp_root: Path = Path("/data/tmp")
 
     ollama_base_url: str = "http://host.docker.internal:11434"
     chat_model: str = "qwen3.6:27b-mlx"
