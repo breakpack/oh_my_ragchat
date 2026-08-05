@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, fmtTime, type Citation, type DocRow, type RagEvent } from '../api'
+import { api, fmtTime, type Citation, type DocRow } from '../api'
 import { Toggle, useRun, useToast } from '../ui'
 import GraphCanvas, { type GEdge, type GNode } from '../components/GraphCanvas'
+import { useRagEvents } from '../useRagEvents'
 
 const STATUS: Record<string, { label: string; cls: string }> = {
   pending: { label: '대기', cls: '' },
@@ -49,7 +50,6 @@ function Documents() {
   const [docs, setDocs] = useState<DocRow[]>([])
   const [stats, setStats] = useState<any>(null)
   const [q, setQ] = useState('')
-  const [live, setLive] = useState(false)
 
   const load = useCallback(async () => {
     const r = await run(() =>
@@ -67,87 +67,37 @@ function Documents() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q])
 
-  // 워커가 Postgres NOTIFY 로 밀어주는 진행률을 그대로 받는다. 폴링은 안전망으로만 남긴다.
+  // 워커가 Postgres NOTIFY 로 밀어주는 진행률. 폴링은 안전망으로만 남긴다.
+  const live = useRagEvents((ev) => {
+    if (ev.kind === 'scan') {
+      if (ev.queued || ev.removed) load()
+      return
+    }
+    if (ev.kind === 'document') load()
+
+    setDocs((prev) => {
+      const i = prev.findIndex(
+        (d) => (ev.document_id && d.id === ev.document_id) || d.path === ev.path,
+      )
+      if (i === -1) return prev
+      const next = [...prev]
+      next[i] = {
+        ...next[i],
+        status: ev.status ?? next[i].status,
+        progress_done: ev.done ?? 0,
+        progress_total: ev.total ?? 0,
+        phase: ev.phase ?? next[i].phase,
+        error: ev.error ?? (ev.status === 'error' ? next[i].error : null),
+        chunk_count: ev.chunk_count ?? next[i].chunk_count,
+      }
+      return next
+    })
+  })
+
   useEffect(() => {
-    let es: EventSource | null = null
-    let refreshTimer: ReturnType<typeof setTimeout> | null = null
-    let retryTimer: ReturnType<typeof setTimeout> | null = null
-    let attempt = 0
-    let disposed = false
-
-    const refreshSoon = () => {
-      if (refreshTimer) return
-      refreshTimer = setTimeout(() => {
-        refreshTimer = null
-        load()
-      }, 1200)
-    }
-
-    const onMessage = (e: MessageEvent) => {
-      let ev: RagEvent
-      try {
-        ev = JSON.parse(e.data)
-      } catch {
-        return
-      }
-
-      if (ev.kind === 'scan') {
-        if (ev.queued || ev.removed) refreshSoon()
-        return
-      }
-      if (ev.status === 'deleted' || ev.kind === 'document') refreshSoon()
-
-      setDocs((prev) => {
-        const i = prev.findIndex(
-          (d) => (ev.document_id && d.id === ev.document_id) || d.path === ev.path,
-        )
-        if (i === -1) return prev
-        const next = [...prev]
-        next[i] = {
-          ...next[i],
-          status: ev.status ?? next[i].status,
-          progress_done: ev.done ?? 0,
-          progress_total: ev.total ?? 0,
-          phase: ev.phase ?? next[i].phase,
-          error: ev.error ?? (ev.status === 'error' ? next[i].error : null),
-          chunk_count: ev.chunk_count ?? next[i].chunk_count,
-        }
-        return next
-      })
-    }
-
-    const connect = () => {
-      if (disposed) return
-      es = new EventSource('/api/rag/events')
-      es.onopen = () => {
-        attempt = 0
-        setLive(true)
-      }
-      es.onmessage = onMessage
-      es.onerror = () => {
-        setLive(false)
-        // 502 처럼 치명적인 응답을 받으면 브라우저는 재연결을 포기하고 CLOSED 로 둔다
-        // (api 컨테이너 재시작 중에 실제로 발생). 그때는 직접 다시 연다.
-        if (es && es.readyState === EventSource.CLOSED) {
-          es.close()
-          es = null
-          const delay = Math.min(2000 * 2 ** attempt++, 30000)
-          retryTimer = setTimeout(connect, delay)
-        }
-      }
-    }
-    connect()
-
-    const poll = setInterval(load, 30000) // SSE 가 끊겨도 화면이 굳지 않게
-    return () => {
-      disposed = true
-      es?.close()
-      clearInterval(poll)
-      if (refreshTimer) clearTimeout(refreshTimer)
-      if (retryTimer) clearTimeout(retryTimer)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q])
+    const t = setInterval(load, 30000)
+    return () => clearInterval(t)
+  }, [load])
 
   return (
     <>
@@ -330,7 +280,7 @@ function SearchTest() {
   )
 }
 
-function GraphView() {
+export function GraphView({ source }: { source?: string } = {}) {
   const run = useRun()
   const [entity, setEntity] = useState('')
   const [limit, setLimit] = useState(150)
@@ -366,13 +316,14 @@ function GraphView() {
       const r = await run(() =>
         api.get<any>(
           `/api/rag/graph?depth=${opts?.depth ?? depth}&limit=${opts?.limit ?? limit}` +
+            (source ? `&source=${source}` : '') +
             (name ? `&entity=${encodeURIComponent(name)}` : ''),
         ),
       )
       setBusy(false)
       if (r) setData(r)
     },
-    [run, limit, depth],
+    [run, limit, depth, source],
   )
 
   useEffect(() => {

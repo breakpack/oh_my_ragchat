@@ -12,6 +12,7 @@ from . import db, migrate, ollama, paths
 from .routers.auth import router as auth_router
 from .routers.chat import router as chat_router
 from .routers.files import router as files_router
+from .routers.notion import router as notion_router
 from .routers.personas import router as personas_router
 from .routers.rag import router as rag_router
 from .routers.sessions import router as sessions_router
@@ -44,6 +45,7 @@ app.include_router(personas_router)
 app.include_router(sessions_router)
 app.include_router(chat_router)
 app.include_router(rag_router)
+app.include_router(notion_router)
 
 
 @app.get("/api/health")

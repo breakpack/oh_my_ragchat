@@ -22,10 +22,14 @@ router = APIRouter(prefix="/api/rag", tags=["rag"], dependencies=[deps.Auth])
 def documents(
     status_filter: str | None = Query(None, alias="status"),
     q: str | None = Query(None),
+    source: str | None = Query(None, pattern="^(nas|notion)$"),
     limit: int = Query(200, ge=1, le=2000),
     offset: int = Query(0, ge=0),
 ) -> dict:
     where, params = [], []
+    if source:
+        where.append("source = %s")
+        params.append(source)
     if status_filter:
         where.append("status = %s")
         params.append(status_filter)
@@ -172,12 +176,17 @@ async def graph_view(
     entity: str | None = Query(None),
     depth: int = Query(1, ge=1, le=2),
     limit: int = Query(150, ge=1, le=800),
+    source: str | None = Query(None, pattern="^(nas|notion)$"),
 ) -> dict:
-    """엔티티 이웃 그래프. entity 를 안 주면 degree 상위 노드를 보여준다."""
-    return await anyio.to_thread.run_sync(_graph_sync, entity, depth, limit)
+    """엔티티 이웃 그래프. entity 를 안 주면 degree 상위 노드를 보여준다.
+
+    source 를 주면 그 출처의 문서에서 나온 엔티티만 시드로 삼는다.
+    """
+    return await anyio.to_thread.run_sync(_graph_sync, entity, depth, limit, source)
 
 
-def _graph_sync(entity: str | None, depth: int, limit: int) -> dict[str, Any]:
+def _graph_sync(entity: str | None, depth: int, limit: int,
+                source: str | None = None) -> dict[str, Any]:
     with db.cursor(commit=False) as cur:
         if entity:
             cur.execute(
@@ -192,9 +201,23 @@ def _graph_sync(entity: str | None, depth: int, limit: int) -> dict[str, Any]:
             if not seeds:
                 return {"nodes": [], "edges": [], "seed": entity}
         else:
-            cur.execute(
-                "SELECT id FROM entities ORDER BY degree DESC, id LIMIT %s", (limit // 4 or 1,)
-            )
+            if source:
+                cur.execute(
+                    """
+                    SELECT e.id FROM entities e
+                     WHERE EXISTS (
+                       SELECT 1 FROM chunk_entities ce
+                         JOIN chunks c ON c.id = ce.chunk_id
+                         JOIN documents d ON d.id = c.document_id
+                        WHERE ce.entity_id = e.id AND d.source = %s)
+                     ORDER BY e.degree DESC, e.id LIMIT %s
+                    """,
+                    (source, limit // 4 or 1),
+                )
+            else:
+                cur.execute(
+                    "SELECT id FROM entities ORDER BY degree DESC, id LIMIT %s", (limit // 4 or 1,)
+                )
             seeds = [r["id"] for r in cur.fetchall()]
             if not seeds:
                 return {"nodes": [], "edges": [], "seed": None}

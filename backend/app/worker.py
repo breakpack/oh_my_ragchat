@@ -48,6 +48,9 @@ def handle(job: dict, client: httpx.Client) -> None:
     elif kind == jobs.DELETE_DOCUMENT:
         n = index.delete_document(payload["path"])
         log.info("인덱스에서 제거: %s (문서 %d건)", payload["path"], n)
+    elif kind == jobs.INDEX_NOTION:
+        index.index_notion(payload["path"], cfg, depth=int(payload.get("depth", 0)),
+                           max_depth=int(payload.get("max_depth", 3)), client=client)
     elif kind == jobs.REINDEX_ALL:
         with db.cursor() as cur:
             cur.execute("UPDATE documents SET status = 'pending'")

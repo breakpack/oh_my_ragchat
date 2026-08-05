@@ -5,6 +5,7 @@ import Auth from './pages/Auth'
 import Chat from './pages/Chat'
 import Files from './pages/Files'
 import Knowledge from './pages/Knowledge'
+import Notion from './pages/Notion'
 import Settings from './pages/Settings'
 
 interface Me {
@@ -46,6 +47,7 @@ export default function App() {
           { to: '/chat', label: '채팅' },
           { to: '/files', label: '파일' },
           { to: '/knowledge', label: '지식' },
+          { to: '/notion', label: 'Notion' },
           { to: '/settings', label: '설정' },
         ].map((m) => (
           <NavLink key={m.to} to={m.to} className={({ isActive }) => (isActive ? 'active' : '')}>
@@ -72,6 +74,7 @@ export default function App() {
           <Route path="/chat/:sessionId" element={<Chat />} />
           <Route path="/files" element={<Files />} />
           <Route path="/knowledge" element={<Knowledge />} />
+          <Route path="/notion" element={<Notion />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/chat" replace />} />
         </Routes>

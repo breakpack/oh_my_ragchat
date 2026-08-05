@@ -14,6 +14,7 @@ from . import db
 INDEX_DOCUMENT = "index_document"
 DELETE_DOCUMENT = "delete_document"
 REINDEX_ALL = "reindex_all"
+INDEX_NOTION = "index_notion"
 
 
 def enqueue(kind: str, payload: dict[str, Any] | None = None) -> int | None:

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import httpx
 
-from .. import db, deepseek, events, flags, jobs, ollama, paths, security
+from .. import db, deepseek, events, flags, jobs, notion, ollama, paths, security
 from ..config import IMAGE_EXTS, INDEXABLE_EXTS, env
 from . import chunk as chunker
 from . import extract as extractor
@@ -321,6 +321,70 @@ def _build_graph_parallel(doc_id: int, rel: str, rows: list[dict], cfg: dict,
         log.info("일부 청크는 로컬 모델로 대체 처리했습니다: %s", rel)
 
 
+MAX_NOTION_DOCS = 500  # 크롤이 폭주하지 않게 두는 전체 상한
+
+
+def index_notion(page_id: str, cfg: dict, *, depth: int = 0, max_depth: int = 3,
+                 client: httpx.Client | None = None) -> str:
+    """Notion 페이지 하나를 색인하고 하위 페이지를 큐에 넣는다."""
+    owned = client is None
+    client = client or httpx.Client(timeout=600)
+    api = httpx.Client(timeout=60)
+    try:
+        page = notion.fetch(page_id, api)
+        path = f"notion/{page['title']}"
+
+        with db.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO documents (path, source, notion_id, url, status)
+                VALUES (%s, 'notion', %s, %s, 'pending')
+                ON CONFLICT (notion_id) WHERE notion_id IS NOT NULL DO UPDATE
+                   SET path = EXCLUDED.path, url = EXCLUDED.url
+                RETURNING id
+                """,
+                (path, page_id, page["url"]),
+            )
+            doc_id = cur.fetchone()["id"]
+
+        pieces = chunker.split(
+            page["text"], int(cfg["rag_chunk_size"]), int(cfg["rag_chunk_overlap"])
+        )
+        if not pieces:
+            _set_status(doc_id, path, "skipped", error="본문이 비어 있습니다", chunk_count=0)
+        else:
+            _set_status(doc_id, path, "embedding", chunk_count=len(pieces), total=len(pieces))
+            _replace_chunks(doc_id, path, pieces, cfg, client)
+            if cfg["rag_extract_graph"]:
+                _set_status(doc_id, path, "graphing", total=len(pieces))
+                _build_graph(doc_id, path, cfg, client)
+            _set_status(doc_id, path, "ready", chunk_count=len(pieces))
+
+        # 하위 페이지 확장
+        if depth < max_depth and page["children"]:
+            with db.cursor(commit=False) as cur:
+                cur.execute("SELECT count(*) AS n FROM documents WHERE source = 'notion'")
+                total = cur.fetchone()["n"]
+            if total < MAX_NOTION_DOCS:
+                for child in page["children"]:
+                    jobs.enqueue(jobs.INDEX_NOTION,
+                                 {"path": child, "depth": depth + 1, "max_depth": max_depth})
+            else:
+                log.warning("Notion 문서 상한(%d)에 도달해 하위 페이지를 더 넣지 않습니다", MAX_NOTION_DOCS)
+
+        log.info("Notion 색인 완료 %s (청크 %d, 하위 %d)", path, len(pieces), len(page["children"]))
+        return "ready"
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Notion 색인 실패 %s", page_id)
+        events.publish("document", {"path": f"notion:{page_id}", "status": "error",
+                                    "error": f"{type(exc).__name__}: {exc}"})
+        raise
+    finally:
+        api.close()
+        if owned:
+            client.close()
+
+
 def delete_document(rel: str) -> int:
     """문서 또는 폴더 하위 문서 전체를 인덱스에서 제거."""
     rel = paths.normalize(rel)
@@ -375,7 +439,7 @@ def scan(cfg: dict, *, force: bool = False) -> dict:
                 on_disk[rel] = (st.st_mtime, st.st_size)
 
     with db.cursor(commit=False) as cur:
-        cur.execute("SELECT path, mtime, size, status FROM documents")
+        cur.execute("SELECT path, mtime, size, status FROM documents WHERE source = 'nas'")
         known = {r["path"]: r for r in cur.fetchall()}
 
     queued = removed = 0
