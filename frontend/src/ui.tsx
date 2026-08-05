@@ -60,6 +60,7 @@ export function Modal({
   submitLabel = '확인',
   danger,
   busy,
+  submitDisabled,
 }: {
   title: string
   children: ReactNode
@@ -68,6 +69,7 @@ export function Modal({
   submitLabel?: string
   danger?: boolean
   busy?: boolean
+  submitDisabled?: boolean
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -91,7 +93,11 @@ export function Modal({
         <footer>
           <button type="button" onClick={onClose}>취소</button>
           {onSubmit && (
-            <button type="submit" className={danger ? 'danger' : 'primary'} disabled={busy}>
+            <button
+              type="submit"
+              className={danger ? 'danger' : 'primary'}
+              disabled={busy || submitDisabled}
+            >
               {busy ? '처리 중…' : submitLabel}
             </button>
           )}

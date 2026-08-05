@@ -619,6 +619,22 @@ tbody tr:hover { background: var(--n-page); }
 }
 .drop.over { border-color: var(--primary); color: var(--primary); background: var(--blue-tint); }
 
+/* 끌어서 이동 */
+.files tr[draggable='true'] .fname { cursor: grab; }
+.files tr.dragging td { opacity: .45; }
+.files tr.drop-target td { background: var(--blue-tint); box-shadow: inset 0 0 0 1.5px var(--primary); }
+.crumbs a.drop-target { background: var(--blue-tint); color: var(--primary); border-radius: var(--r-sm); }
+
+/* 폴더 선택기 */
+.picker { max-height: 46vh; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-md); }
+.picker .row-item {
+  display: flex; align-items: center; gap: var(--sp-md);
+  padding: var(--sp-sm) var(--sp-md); cursor: pointer; border-bottom: 1px solid var(--line);
+}
+.picker .row-item:last-child { border-bottom: 0; }
+.picker .row-item:hover { background: var(--canvas); }
+.picker .row-item.disabled { opacity: .4; cursor: not-allowed; }
+
 /* ========================= 파일 미리보기 패널 ========================= */
 
 .preview {

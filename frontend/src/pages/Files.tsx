@@ -4,14 +4,19 @@ import remarkGfm from 'remark-gfm'
 import { api, fmtSize, fmtTime, uploadWithProgress, type FileItem, type Preview } from '../api'
 import { Field, Modal, Toggle, useRun, useToast } from '../ui'
 
-/** 업로드 중인 파일 하나의 상태. 파일별 진행률을 받으려고 한 건씩 순차 전송한다. */
-interface Upload {
+/** 진행 중인 작업 하나. 업로드는 바이트 진행률이 있고, 이동은 끝나면 100% 로 채운다. */
+interface Job {
   name: string
   size: number
   loaded: number
   status: 'pending' | 'uploading' | 'done' | 'error'
   error?: string
 }
+
+const parentOf = (p: string) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '')
+
+/** dest 가 item 자신이거나 그 하위면 옮길 수 없다 (백엔드도 막지만 UI 에서 먼저 걸러준다). */
+const isInside = (dest: string, item: string) => dest === item || dest.startsWith(`${item}/`)
 
 const contentUrl = (path: string, download = false) =>
   `/api/files/content?path=${encodeURIComponent(path)}${download ? '&download=1' : ''}`
@@ -28,7 +33,7 @@ interface Listing {
 type Dialog =
   | { kind: 'mkdir' }
   | { kind: 'rename'; item: FileItem }
-  | { kind: 'move'; item: FileItem }
+  | { kind: 'move'; item: FileItem }  // 경로를 직접 치는 대신 폴더를 골라서 이동한다
   | { kind: 'lock'; item: FileItem }
   | { kind: 'unlock'; item: FileItem; then: 'preview' | 'download' }
   | null
@@ -49,7 +54,10 @@ export default function Files() {
   const [text, setText] = useState('')
   const [password, setPassword] = useState('')
   const [over, setOver] = useState(false)
-  const [uploads, setUploads] = useState<Upload[]>([])
+  const [jobs, setJobs] = useState<Job[]>([])
+  const [jobKind, setJobKind] = useState<'업로드' | '이동'>('업로드')
+  const [drag, setDrag] = useState<FileItem | null>(null)
+  const [dropTarget, setDropTarget] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const [trashOpen, setTrashOpen] = useState(false)
   const [preview, setPreview] = useState<Preview | null>(null)
@@ -77,12 +85,13 @@ export default function Files() {
     const list = Array.from(files)
     if (!list.length) return
 
-    setUploads(list.map((f) => ({ name: f.name, size: f.size, loaded: 0, status: 'pending' })))
+    setJobKind('업로드')
+    setJobs(list.map((f) => ({ name: f.name, size: f.size, loaded: 0, status: 'pending' })))
     const ctrl = new AbortController()
     abortRef.current = ctrl
 
-    const patch = (i: number, u: Partial<Upload>) =>
-      setUploads((prev) => prev.map((x, j) => (j === i ? { ...x, ...u } : x)))
+    const patch = (i: number, u: Partial<Job>) =>
+      setJobs((prev) => prev.map((x, j) => (j === i ? { ...x, ...u } : x)))
 
     let ok = 0
     for (let i = 0; i < list.length; i++) {
@@ -111,6 +120,33 @@ export default function Files() {
 
     abortRef.current = null
     if (ok) toast(`${ok}개 업로드 완료`)
+    load()
+  }
+
+  /** 이동은 한 번의 요청이라 바이트 진행률이 없다. 업로드와 같은 카드로 보여주되
+   *  건별로 대기 → 완료(100%)만 채운다. */
+  const moveItems = async (items: FileItem[], dest: string) => {
+    const targets = items.filter((it) => it.path !== dest && parentOf(it.path) !== dest)
+    if (!targets.length) return
+
+    setJobKind('이동')
+    setJobs(targets.map((it) => ({ name: it.name, size: 1, loaded: 0, status: 'pending' })))
+
+    const patch = (i: number, u: Partial<Job>) =>
+      setJobs((prev) => prev.map((x, j) => (j === i ? { ...x, ...u } : x)))
+
+    let ok = 0
+    for (let i = 0; i < targets.length; i++) {
+      patch(i, { status: 'uploading' })
+      try {
+        await api.post('/api/files/move', { path: targets[i].path, dest })
+        patch(i, { status: 'done', loaded: 1 })
+        ok++
+      } catch (e: any) {
+        patch(i, { status: 'error', error: e?.message || String(e) })
+      }
+    }
+    if (ok) toast(`${ok}개를 '${dest || 'NAS'}' 로 옮겼습니다`)
     load()
   }
 
@@ -150,9 +186,7 @@ export default function Files() {
     if (dialog.kind === 'mkdir') {
       await run(() => api.post('/api/files/mkdir', { path, name: text }), '폴더를 만들었습니다')
     } else if (dialog.kind === 'rename') {
-      await run(() => api.post('/api/files/rename', { path: dialog.item.path, name: text }))
-    } else if (dialog.kind === 'move') {
-      await run(() => api.post('/api/files/move', { path: dialog.item.path, dest: text }))
+      await run(() => api.post('/api/files/rename', { path: dialog.item.path, name: text }), '이름을 바꿨습니다')
     } else if (dialog.kind === 'lock') {
       await run(
         () =>
@@ -174,16 +208,39 @@ export default function Files() {
     load()
   }
 
-  const busy = uploads.some((u) => u.status === 'pending' || u.status === 'uploading')
-  const done = uploads.filter((u) => u.status === 'done').length
-  const totalBytes = uploads.reduce((s, u) => s + u.size, 0)
-  const loaded = uploads.reduce((s, u) => s + (u.status === 'done' ? u.size : u.loaded), 0)
+  const busy = jobs.some((u) => u.status === 'pending' || u.status === 'uploading')
+  const done = jobs.filter((u) => u.status === 'done').length
+  const totalBytes = jobs.reduce((s, u) => s + u.size, 0)
+  const loaded = jobs.reduce((s, u) => s + (u.status === 'done' ? u.size : u.loaded), 0)
   const overall = totalBytes ? Math.round((loaded / totalBytes) * 100) : 0
+  const uploading = jobKind === '업로드'
+
+  /** 폴더 행·상위 폴더·breadcrumb 에 공통으로 붙는 드롭 대상 핸들러. */
+  const dropZone = (dest: string | null, canDrop = true) => ({
+    onDragOver: (e: React.DragEvent) => {
+      if (!drag || dest === null || !canDrop) return
+      e.preventDefault()
+      e.stopPropagation()
+      setDropTarget(dest)
+    },
+    onDragLeave: () => setDropTarget((t) => (t === dest ? null : t)),
+    onDrop: (e: React.DragEvent) => {
+      if (!drag || dest === null || !canDrop) return
+      e.preventDefault()
+      e.stopPropagation()
+      const item = drag
+      setDrag(null)
+      setDropTarget(null)
+      moveItems([item], dest)
+    },
+  })
 
   return (
     <div
       className="page"
       onDragOver={(e) => {
+        // 목록 안에서 끌고 다니는 중이면 업로드 하이라이트를 켜지 않는다
+        if (!e.dataTransfer.types.includes('Files')) return
         e.preventDefault()
         setOver(true)
       }}
@@ -196,11 +253,23 @@ export default function Files() {
     >
       <header className="row wrap">
         <div className="crumbs grow">
-          <a onClick={() => go('')}>NAS</a>
+          <a
+            onClick={() => go('')}
+            className={dropTarget === '' ? 'drop-target' : ''}
+            {...dropZone('')}
+          >
+            NAS
+          </a>
           {data?.breadcrumbs.map((b) => (
             <span key={b.path}>
               <span className="sep"> / </span>
-              <a onClick={() => go(b.path)}>{b.name}</a>
+              <a
+                onClick={() => go(b.path)}
+                className={dropTarget === b.path ? 'drop-target' : ''}
+                {...dropZone(b.path)}
+              >
+                {b.name}
+              </a>
             </span>
           ))}
           {data?.watched && <span className="badge on" style={{ marginLeft: 8 }}>RAG 감시 중</span>}
@@ -221,19 +290,20 @@ export default function Files() {
         />
       </header>
 
-      {uploads.length > 0 ? (
+      {jobs.length > 0 ? (
         <div className="card uploads">
           <h3>
-            업로드
+            {jobKind}
             <span className="mute2">
-              {done}/{uploads.length} · {fmtSize(loaded)} / {fmtSize(totalBytes)}
+              {done}/{jobs.length}
+              {uploading && ` · ${fmtSize(loaded)} / ${fmtSize(totalBytes)}`}
             </span>
             <span className="right row">
               <strong>{overall}%</strong>
-              {busy ? (
+              {busy && uploading ? (
                 <button className="sm danger" onClick={() => abortRef.current?.abort()}>취소</button>
               ) : (
-                <button className="sm" onClick={() => setUploads([])}>닫기</button>
+                <button className="sm" onClick={() => setJobs([])} disabled={busy}>닫기</button>
               )}
             </span>
           </h3>
@@ -242,7 +312,7 @@ export default function Files() {
             <div className="bar-fill" style={{ width: `${overall}%` }} />
           </div>
 
-          {uploads.map((u, i) => {
+          {jobs.map((u, i) => {
             const pct = u.size ? Math.round((u.loaded / u.size) * 100) : u.status === 'done' ? 100 : 0
             return (
               <div className="up-row" key={`${u.name}-${i}`}>
@@ -267,7 +337,10 @@ export default function Files() {
           })}
         </div>
       ) : (
-        <div className={`drop${over ? ' over' : ''}`}>여기로 파일을 끌어다 놓으면 업로드됩니다</div>
+        <div className={`drop${over ? ' over' : ''}`}>
+          여기로 파일을 끌어다 놓으면 업로드됩니다
+          <span className="mute2"> · 목록의 항목은 폴더나 위쪽 경로로 끌어다 옮길 수 있습니다</span>
+        </div>
       )}
 
       <div className="card flush files">
@@ -282,7 +355,10 @@ export default function Files() {
           </thead>
           <tbody>
             {data?.parent !== null && data && (
-              <tr>
+              <tr
+                className={dropTarget === data.parent ? 'drop-target' : ''}
+                {...dropZone(data.parent)}
+              >
                 <td className="name">
                   <span className="ico" aria-hidden="true">↰</span>
                   <span className="fname" onClick={() => go(data.parent!)}>상위 폴더</span>
@@ -291,7 +367,23 @@ export default function Files() {
               </tr>
             )}
             {data?.items.map((it) => (
-              <tr key={it.path} className={it.hidden ? 'is-hidden' : ''}>
+              <tr
+                key={it.path}
+                className={[
+                  it.hidden ? 'is-hidden' : '',
+                  drag?.path === it.path ? 'dragging' : '',
+                  dropTarget === it.path ? 'drop-target' : '',
+                ].filter(Boolean).join(' ')}
+                draggable
+                onDragStart={(e) => {
+                  setDrag(it)
+                  e.dataTransfer.effectAllowed = 'move'
+                  e.dataTransfer.setData('text/plain', it.path)
+                }}
+                onDragEnd={() => { setDrag(null); setDropTarget(null) }}
+                // 폴더에만 떨어뜨릴 수 있다. 자기 자신·자기 하위는 제외.
+                {...dropZone(it.is_dir ? it.path : null, !!drag && !isInside(it.path, drag.path))}
+              >
                 <td className="name">
                   <span className="ico" aria-hidden="true">{it.is_dir ? '📁' : ICONS[it.ext] || '📄'}</span>
                   <span className="fname" onClick={() => (it.is_dir ? go(it.path) : openFile(it))}>
@@ -343,11 +435,15 @@ export default function Files() {
       )}
 
       {dialog?.kind === 'move' && (
-        <Modal title={`'${dialog.item.name}' 이동`} onClose={() => setDialog(null)} onSubmit={submitDialog} submitLabel="이동">
-          <Field label="목적지 폴더" hint="NAS 루트 기준 상대경로. 비우면 루트">
-            <input value={text} autoFocus placeholder="documents/2026" onChange={(e) => setText(e.target.value)} />
-          </Field>
-        </Modal>
+        <FolderPicker
+          item={dialog.item}
+          start={path}
+          onClose={() => setDialog(null)}
+          onPick={(dest) => {
+            setDialog(null)
+            moveItems([dialog.item], dest)
+          }}
+        />
       )}
 
       {dialog?.kind === 'lock' && (
@@ -381,6 +477,119 @@ export default function Files() {
 
       {trashOpen && <Trash onClose={() => { setTrashOpen(false); load() }} />}
     </div>
+  )
+}
+
+/** VS Code 의 폴더 고르기처럼, 경로를 치는 대신 들어가면서 고른다. */
+function FolderPicker({
+  item,
+  start,
+  onClose,
+  onPick,
+}: {
+  item: FileItem
+  start: string
+  onClose: () => void
+  onPick: (dest: string) => void
+}) {
+  const run = useRun()
+  const [cur, setCur] = useState(start)
+  const [data, setData] = useState<Listing | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [newName, setNewName] = useState('')
+
+  const load = useCallback(
+    async (p: string) => {
+      setBusy(true)
+      const r = await run(() => api.get<Listing>(`/api/files?path=${encodeURIComponent(p)}&show_hidden=1`))
+      setBusy(false)
+      if (r) {
+        setData(r)
+        setCur(r.path)
+      }
+    },
+    [run],
+  )
+
+  useEffect(() => { load(start) }, [load, start])
+
+  const dirs = (data?.items ?? []).filter((x) => x.is_dir)
+  const here = parentOf(item.path) === cur   // 이미 이 폴더에 있다
+  const inSelf = isInside(cur, item.path)    // 자기 자신 안으로는 못 간다
+
+  return (
+    <Modal
+      title={`'${item.name}' 이동`}
+      onClose={onClose}
+      onSubmit={() => onPick(cur)}
+      submitLabel={here ? '같은 위치' : `여기로 이동`}
+      submitDisabled={here || inSelf}
+    >
+      <div className="crumbs" style={{ marginBottom: 8 }}>
+        <a onClick={() => load('')}>NAS</a>
+        {data?.breadcrumbs.map((b) => (
+          <span key={b.path}>
+            <span className="sep"> / </span>
+            <a onClick={() => load(b.path)}>{b.name}</a>
+          </span>
+        ))}
+      </div>
+
+      <div className="picker">
+        {data?.parent !== null && data && (
+          <div className="row-item" onClick={() => load(data.parent!)}>
+            <span aria-hidden="true">↰</span> 상위 폴더
+          </div>
+        )}
+        {dirs.map((d) => {
+          const blocked = isInside(d.path, item.path)
+          return (
+            <div
+              key={d.path}
+              className={`row-item${blocked ? ' disabled' : ''}`}
+              onClick={() => !blocked && load(d.path)}
+              title={blocked ? '자기 자신 안으로는 옮길 수 없습니다' : d.path}
+            >
+              <span aria-hidden="true">📁</span>
+              <span className="grow truncate">{d.name}</span>
+              {d.hidden && <span className="badge">숨김</span>}
+            </div>
+          )
+        })}
+        {!busy && !dirs.length && data?.parent === null && (
+          <div className="empty">하위 폴더가 없습니다</div>
+        )}
+      </div>
+
+      <div className="row" style={{ marginTop: 10 }}>
+        <input
+          className="grow"
+          placeholder="새 폴더 이름"
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && e.preventDefault()}
+        />
+        <button
+          type="button"
+          disabled={!newName.trim()}
+          onClick={async () => {
+            const ok = await run(() => api.post('/api/files/mkdir', { path: cur, name: newName.trim() }))
+            if (ok) {
+              setNewName('')
+              load(cur)
+            }
+          }}
+        >
+          폴더 만들기
+        </button>
+      </div>
+
+      <div className="mute2" style={{ marginTop: 8 }}>
+        목적지: <code>{cur || 'NAS (루트)'}</code>
+        {here && ' — 이미 여기에 있습니다'}
+        {inSelf && ' — 자기 자신 안으로는 옮길 수 없습니다'}
+      </div>
+    </Modal>
   )
 }
 
