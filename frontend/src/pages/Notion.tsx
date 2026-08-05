@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, fmtTime } from '../api'
-import { Field, useRun, useToast } from '../ui'
+import { useRun, useToast } from '../ui'
 import { useRagEvents } from '../useRagEvents'
 import { GraphView } from './Knowledge'
 
@@ -115,7 +115,17 @@ function Pages() {
 
   return (
     <>
-      <TokenCard st={st} onChange={load} />
+      {!st?.configured && (
+        <div className="card">
+          <h3>연결 필요</h3>
+          <div className="mute2">
+            설정 → 연결 에서 Notion 통합 토큰을 먼저 입력하세요.
+          </div>
+          <a className="badge on" href="/settings" style={{ marginTop: 12, display: 'inline-flex' }}>
+            설정으로 이동
+          </a>
+        </div>
+      )}
 
       {st?.configured && (
         <div className="card">
@@ -221,79 +231,5 @@ function Pages() {
         )}
       </div>
     </>
-  )
-}
-
-function TokenCard({ st, onChange }: { st: NotionStatus | null; onChange: () => void }) {
-  const run = useRun()
-  const toast = useToast()
-  const [draft, setDraft] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  const save = async (token: string) => {
-    setBusy(true)
-    const ok = await run(
-      () => api.put('/api/notion/token', { token }),
-      token ? '토큰을 저장했습니다' : '토큰을 삭제했습니다',
-    )
-    setBusy(false)
-    if (ok) {
-      setDraft('')
-      onChange()
-    }
-  }
-
-  return (
-    <div className="card">
-      <h3>
-        연결
-        {st?.configured && <span className="badge ok">토큰 설정됨</span>}
-        {st?.configured && <span className="mono mute2">{st.token_masked}</span>}
-        {st?.configured && (
-          <button
-            className="sm right"
-            onClick={async () => {
-              const r = await run(() => api.post<any>('/api/notion/test'))
-              if (r) toast(r.ok ? `연결 성공 (${r.bot || 'ok'})` : `실패: ${r.error}`, !r.ok)
-            }}
-          >
-            연결 테스트
-          </button>
-        )}
-      </h3>
-
-      {st?.token_source === 'env' ? (
-        <div className="mute2">.env 의 NOTION_TOKEN 으로 지정돼 있어 웹에서 바꿀 수 없습니다.</div>
-      ) : (
-        <>
-          <Field
-            label="내부 통합 토큰"
-            hint="notion.so/my-integrations 에서 만든 Internal Integration Secret"
-          >
-            <div className="row">
-              <input
-                className="grow"
-                type="password"
-                autoComplete="off"
-                placeholder="ntn_... 또는 secret_..."
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && draft.trim() && save(draft.trim())}
-              />
-              <button className="primary" disabled={busy || !draft.trim()} onClick={() => save(draft.trim())}>
-                저장
-              </button>
-              {st?.configured && (
-                <button className="danger" disabled={busy} onClick={() => save('')}>삭제</button>
-              )}
-            </div>
-          </Field>
-          <div className="mute2">
-            토큰은 서버 DB 에 저장되고 조회 API 로는 되돌려주지 않습니다(마스킹만).
-            읽으려는 페이지마다 <b>··· → 연결</b>에서 이 통합을 추가해야 합니다.
-          </div>
-        </>
-      )}
-    </div>
   )
 }

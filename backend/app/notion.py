@@ -88,22 +88,38 @@ def parse_id(url_or_id: str) -> str:
 # ─────────────────────────── API ───────────────────────────
 
 
-def _get(path: str, client: httpx.Client, params: dict | None = None) -> dict:
+NOT_SHARED = (
+    "이 페이지를 통합(integration)에 연결하지 않았습니다.\n"
+    "'인터넷에 게시(Publish to web)'는 API 접근 권한이 아닙니다 — 별개입니다.\n"
+    "Notion 에서 해당 페이지 우측 상단 ··· → 연결(Connections) → 만든 통합을 고르세요."
+)
+
+
+class NotFound(NotionError):
+    """404 — 없거나, 통합에 연결되지 않았거나, 타입이 다르다."""
+
+
+def _req(method: str, path: str, client: httpx.Client, **kw) -> dict:
     t = token()
     if not t:
         raise NotionError("Notion 토큰이 설정되지 않았습니다")
-    r = client.get(
+    r = client.request(
+        method,
         f"{API}{path}",
-        params=params,
         headers={"Authorization": f"Bearer {t}", "Notion-Version": VERSION},
         timeout=30,
+        **kw,
     )
     time.sleep(RATE_SLEEP)
     if r.status_code == 404:
-        raise NotionError("페이지를 찾을 수 없습니다. 통합(integration)에 페이지를 연결했는지 확인하세요")
+        raise NotFound(NOT_SHARED)
     if r.status_code >= 400:
         raise NotionError(f"HTTP {r.status_code}: {r.text[:200]}")
     return r.json()
+
+
+def _get(path: str, client: httpx.Client, params: dict | None = None) -> dict:
+    return _req("GET", path, client, params=params)
 
 
 def _rich(items: list[dict] | None) -> str:
@@ -127,13 +143,37 @@ HEADING = {"heading_1": "# ", "heading_2": "## ", "heading_3": "### "}
 
 def fetch(page_id: str, client: httpx.Client, max_blocks: int = 2000) -> dict[str, Any]:
     """한 페이지의 제목·본문 텍스트·하위 페이지 id 목록."""
-    meta = _get(f"/pages/{page_id}", client)
+    try:
+        meta = _get(f"/pages/{page_id}", client)
+        is_db = False
+    except NotFound:
+        # 링크가 데이터베이스를 가리키면 /pages 는 404 다. /databases 로 다시 시도한다.
+        meta = _get(f"/databases/{page_id}", client)
+        is_db = True
+
     title = page_title(meta)
     url = meta.get("url") or ""
 
     lines: list[str] = [f"# {title}"]
     children: list[str] = []
     seen = 0
+
+    if is_db:
+        # 데이터베이스는 행(row)이 곧 하위 페이지다
+        cursor = None
+        while True:
+            body: dict[str, Any] = {"page_size": 100}
+            if cursor:
+                body["start_cursor"] = cursor
+            data = _req("POST", f"/databases/{page_id}/query", client, json=body)
+            for row in data.get("results") or []:
+                children.append(row["id"])
+                lines.append(f"- (하위 페이지) {page_title(row)}")
+            if not data.get("has_more"):
+                break
+            cursor = data.get("next_cursor")
+        return {"id": page_id, "title": title, "url": url,
+                "text": "\n".join(lines), "children": children}
 
     def walk(block_id: str, depth: int) -> None:
         nonlocal seen
@@ -186,6 +226,13 @@ def ping() -> dict[str, Any]:
     try:
         with httpx.Client() as c:
             me = _get("/users/me", c)
-        return {"ok": True, "bot": (me.get("bot") or {}).get("workspace_name") or me.get("name")}
+        with httpx.Client() as c:
+            found = _req("POST", "/search", c, json={"page_size": 10})
+        pages = [{"id": r["id"], "title": page_title(r)} for r in (found.get("results") or [])]
+        return {
+            "ok": True,
+            "bot": (me.get("bot") or {}).get("workspace_name") or me.get("name"),
+            "accessible": pages,
+        }
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

@@ -5,6 +5,7 @@ import Auth from './pages/Auth'
 import Chat from './pages/Chat'
 import Files from './pages/Files'
 import Knowledge from './pages/Knowledge'
+import Jobs from './pages/Jobs'
 import Notion from './pages/Notion'
 import Settings from './pages/Settings'
 
@@ -48,6 +49,7 @@ export default function App() {
           { to: '/files', label: '파일' },
           { to: '/knowledge', label: '지식' },
           { to: '/notion', label: 'Notion' },
+          { to: '/jobs', label: '작업' },
           { to: '/settings', label: '설정' },
         ].map((m) => (
           <NavLink key={m.to} to={m.to} className={({ isActive }) => (isActive ? 'active' : '')}>
@@ -75,6 +77,7 @@ export default function App() {
           <Route path="/files" element={<Files />} />
           <Route path="/knowledge" element={<Knowledge />} />
           <Route path="/notion" element={<Notion />} />
+          <Route path="/jobs" element={<Jobs />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/chat" replace />} />
         </Routes>
