@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, fmtTime, type Citation, type DocRow } from '../api'
-import { Toggle, useRun, useToast } from '../ui'
+import { Field, Modal, Toggle, useRun, useToast } from '../ui'
 import GraphCanvas, { type GEdge, type GNode } from '../components/GraphCanvas'
 import { useRagEvents } from '../useRagEvents'
 
@@ -278,6 +278,45 @@ function SearchTest() {
   )
 }
 
+/** 그래프를 옵시디언 볼트(마크다운 + 위키링크)로 NAS 안에 내보낸다. */
+function ObsidianExport({ onClose }: { onClose: () => void }) {
+  const run = useRun()
+  const toast = useToast()
+  const [dest, setDest] = useState('obsidian/지식그래프')
+  const [withDocs, setWithDocs] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  const submit = async () => {
+    setBusy(true)
+    const r = await run(() =>
+      api.post<{ path: string; entities: number; relations: number; documents: number; warning: string }>(
+        '/api/rag/export/obsidian',
+        { dest, include_documents: withDocs },
+      ),
+    )
+    setBusy(false)
+    if (!r) return
+    toast(`엔티티 ${r.entities} · 관계 ${r.relations} · 문서 ${r.documents} 를 '${r.path}' 에 내보냈습니다`)
+    if (r.warning) toast(r.warning, true)
+    onClose()
+  }
+
+  return (
+    <Modal title="옵시디언으로 내보내기" onClose={onClose} onSubmit={submit} submitLabel="내보내기" busy={busy}>
+      <Field label="저장 위치" hint="NAS 루트 기준. 이 폴더를 옵시디언에서 볼트로 엽니다">
+        <input value={dest} autoFocus onChange={(e) => setDest(e.target.value)} />
+      </Field>
+      <Toggle checked={withDocs} onChange={setWithDocs}>문서 노트도 만들기 (엔티티 ↔ 문서 연결)</Toggle>
+      <p className="mute2">
+        엔티티마다 노트를 하나씩 만들고 관계를 <code>[[위키링크]]</code> 로 적습니다.
+        옵시디언 그래프 뷰가 그 링크를 간선으로 그리므로 여기서 보던 그래프가 그대로 열립니다.
+        같은 위치로 다시 내보내면 <code>엔티티/</code>·<code>문서/</code> 폴더를 갈아끼웁니다
+        (다른 파일이 있는 폴더는 거부합니다).
+      </p>
+    </Modal>
+  )
+}
+
 export function GraphView({ source }: { source?: string } = {}) {
   const run = useRun()
   const [entity, setEntity] = useState('')
@@ -289,6 +328,7 @@ export function GraphView({ source }: { source?: string } = {}) {
   const [active, setActive] = useState<GNode | null>(null)
   const [sideW, setSideW] = useState(() => Number(localStorage.getItem('graph.sideW')) || 320)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('graph.sideOff') === '1')
+  const [exporting, setExporting] = useState(false)
 
   const startResize = (e: React.PointerEvent) => {
     e.preventDefault()
@@ -377,10 +417,13 @@ export function GraphView({ source }: { source?: string } = {}) {
           <button className="primary" onClick={() => load(entity)} disabled={busy}>
             {busy ? '…' : '보기'}
           </button>
+          <button onClick={() => setExporting(true)}>옵시디언</button>
           <button onClick={toggleSide} aria-label={collapsed ? '설명 패널 열기' : '설명 패널 접기'}>
             {collapsed ? '설명 ▸' : '◂ 접기'}
           </button>
         </div>
+
+        {exporting && <ObsidianExport onClose={() => setExporting(false)} />}
 
         {nodes.length ? (
           <GraphCanvas

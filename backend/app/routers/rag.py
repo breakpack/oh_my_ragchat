@@ -13,6 +13,7 @@ from .. import db, deps, events, jobs, paths
 from ..config import RAG_MODES
 from ..rag import graph as graph_mod
 from ..rag import index as index_mod
+from ..rag import obsidian
 from ..rag.retrieve import retrieve
 
 router = APIRouter(prefix="/api/rag", tags=["rag"], dependencies=[deps.Auth])
@@ -140,6 +141,22 @@ def _docs_under(rel: str) -> list[str]:
 def scan_now(cfg: deps.Settings) -> dict:
     """워커의 주기 스캔을 기다리지 않고 지금 훑는다."""
     return index_mod.scan(cfg)
+
+
+class ObsidianIn(BaseModel):
+    dest: str = "obsidian/지식그래프"
+    include_documents: bool = True
+
+
+@router.post("/export/obsidian")
+async def export_obsidian(body: ObsidianIn, cfg: deps.Settings) -> dict:
+    """지식 그래프를 옵시디언 볼트(마크다운 + 위키링크)로 NAS 안에 내보낸다."""
+    try:
+        return await anyio.to_thread.run_sync(
+            obsidian.export, body.dest, body.include_documents, cfg
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.delete("/documents/{doc_id}")
