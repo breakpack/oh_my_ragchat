@@ -279,8 +279,12 @@ def fetch_public(host: str, page_id: str, client: httpx.Client,
             )
         data = r.json()
         for bid, rec in ((data.get("recordMap") or {}).get("block") or {}).items():
-            if rec.get("value"):
-                blocks[bid] = rec["value"]
+            # 응답이 {"value": {...}} 또는 {"value": {"value": {...}, "role": …}} 로 온다
+            v = rec.get("value")
+            if isinstance(v, dict) and isinstance(v.get("value"), dict):
+                v = v["value"]
+            if isinstance(v, dict) and v.get("type"):
+                blocks[bid] = v
         cursor = data.get("cursor") or {"stack": []}
         if not cursor.get("stack"):
             break
