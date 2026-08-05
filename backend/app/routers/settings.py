@@ -9,7 +9,8 @@ from fastapi import APIRouter, Body, HTTPException, status
 from pydantic import BaseModel
 
 from .. import db, deepseek, deps, flags, ollama, paths, remote
-from ..config import ADMIN_SETTINGS, DEFAULT_SETTINGS, EXTRACT_PROVIDERS, RAG_MODES
+from ..config import (ADMIN_SETTINGS, DEFAULT_SETTINGS, EXTRACT_PROVIDERS, RAG_MODES,
+                      WEB_MODES)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[deps.Auth])
 
@@ -34,6 +35,8 @@ _RANGES: dict[str, tuple[float, float]] = {
     "deepseek_max_input_chars": (500, 20000),
     "deepseek_max_output_tokens": (100, 8000),
     "deepseek_token_budget": (0, 1_000_000_000),
+    "web_top_k": (1, 20),
+    "web_fetch_pages": (0, 5),
     "session_days": (1, 365),
     "file_unlock_minutes": (1, 1440),
 }
@@ -74,6 +77,9 @@ def _coerce(key: str, value: Any) -> Any:
 
     if key == "rag_default_mode" and value not in RAG_MODES:
         raise HTTPException(400, detail=f"rag_default_mode: {RAG_MODES} 중 하나여야 합니다")
+
+    if key == "web_search_mode" and value not in WEB_MODES:
+        raise HTTPException(400, detail=f"web_search_mode: {WEB_MODES} 중 하나여야 합니다")
 
     if key == "extract_provider":
         if value not in EXTRACT_PROVIDERS:

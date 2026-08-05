@@ -147,6 +147,7 @@ export interface Session {
   model: string | null
   rag_enabled: boolean
   rag_mode: string
+  web_enabled: boolean
   message_count?: number
   updated_at: string
 }
@@ -167,6 +168,11 @@ export interface Citation {
   chunk_id: number
   excerpt: string
   score: number
+  // 웹/논문 출처일 때만 채워진다 (내 문서 출처는 path 가 파일 경로)
+  kind?: 'web' | 'paper'
+  title?: string
+  url?: string
+  meta?: string
 }
 
 export interface Attachment {

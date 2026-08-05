@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS {schema}.chat_sessions (
     model       text,
     rag_enabled boolean NOT NULL DEFAULT false,
     rag_mode    text NOT NULL DEFAULT 'hybrid',
+    web_enabled boolean NOT NULL DEFAULT false,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now()
 );

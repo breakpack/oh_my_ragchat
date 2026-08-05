@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .. import db, deepseek, deps, ollama, paths, remote, security
+from .. import db, deepseek, deps, ollama, paths, remote, security, websearch
 from ..config import IMAGE_EXTS, RAG_MODES, env
 from ..rag import extract as extractor
 from ..rag.retrieve import retrieve
@@ -41,6 +41,16 @@ RAG_EMPTY_INSTRUCTION = (
     "사용자의 개인 문서를 검색했지만 관련 자료를 찾지 못했다. "
     "그 사실을 짧게 알린 뒤 일반 지식으로 답하라.\n\n"
 )
+WEB_INSTRUCTION = (
+    "아래 [웹 검색 결과]는 방금 인터넷과 논문 데이터베이스에서 찾은 것이다. "
+    "활용한 문장 끝에는 [W1] 같은 출처 태그를 붙여라. 논문을 소개할 때는 제목·저자·연도·"
+    "DOI/URL 을 함께 적어라. 검색 결과에 없는 내용을 검색 결과인 것처럼 말하지 말고, "
+    "결과가 질문과 어긋나면 그렇다고 말하라.\n\n"
+)
+WEB_EMPTY_INSTRUCTION = (
+    "인터넷을 검색했지만 쓸 만한 결과를 얻지 못했다. 그 사실을 짧게 알린 뒤 "
+    "일반 지식으로 답하고, 확실하지 않은 부분은 확실하지 않다고 밝혀라.\n\n"
+)
 
 
 class AttachmentIn(BaseModel):
@@ -55,6 +65,7 @@ class MessageIn(BaseModel):
     content: str = Field(min_length=1)
     rag_enabled: bool | None = None  # 메시지 단위 오버라이드
     rag_mode: str | None = None
+    web_enabled: bool | None = None
     model: str | None = None
     temperature: float | None = Field(None, ge=0.0, le=2.0)
     attachments: list[AttachmentIn] = Field(default_factory=list)
@@ -216,6 +227,7 @@ async def send(session_id: int, body: MessageIn, cfg: deps.Settings) -> Streamin
     persona = get_persona(session["persona_id"])
 
     use_rag = session["rag_enabled"] if body.rag_enabled is None else body.rag_enabled
+    use_web = session["web_enabled"] if body.web_enabled is None else body.web_enabled
     mode = body.rag_mode or session["rag_mode"] or cfg["rag_default_mode"]
     if mode not in RAG_MODES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"rag_mode 는 {RAG_MODES} 중 하나")
@@ -248,6 +260,7 @@ async def send(session_id: int, body: MessageIn, cfg: deps.Settings) -> Streamin
     async def stream() -> AsyncIterator[str]:
         citations: list[dict] = []
         rag_stats: dict | None = None
+        web_stats: dict | None = None
         answer: list[str] = []
         thinking: list[str] = []
         try:
@@ -255,20 +268,49 @@ async def send(session_id: int, body: MessageIn, cfg: deps.Settings) -> Streamin
             if persona and persona["system_prompt"]:
                 system_parts.append(persona["system_prompt"])
 
+            # 내 문서 검색과 외부 검색은 서로 독립이라 같이 돌린다 (둘 다 네트워크 대기)
+            jobs: dict[str, Any] = {}
             if use_rag:
-                ctx = await retrieve(body.content, mode, cfg)
+                jobs["rag"] = retrieve(body.content, mode, cfg)
+            if use_web:
+                jobs["web"] = websearch.search(body.content, cfg)
+            done: dict[str, Any] = {}
+            if jobs:
+                results = await asyncio.gather(*jobs.values(), return_exceptions=True)
+                done = dict(zip(jobs, results))
+
+            ctx = done.get("rag")
+            if use_rag and not isinstance(ctx, Exception) and ctx is not None:
                 rag_stats = ctx.stats
                 if ctx.empty:
                     system_parts.append(RAG_EMPTY_INSTRUCTION.strip())
                 else:
                     system_parts.append(RAG_INSTRUCTION + ctx.prompt_block)
-                    citations = ctx.citations
+                    citations += ctx.citations
+            elif use_rag:
+                log.warning("RAG 검색 실패: %s", ctx)
+                rag_stats = {"error": str(ctx)}
+
+            web = done.get("web")
+            if use_web and not isinstance(web, Exception) and web is not None:
+                web_stats = web.stats
+                if web.empty:
+                    system_parts.append(WEB_EMPTY_INSTRUCTION.strip())
+                else:
+                    system_parts.append(WEB_INSTRUCTION + web.prompt_block)
+                    citations += web.citations
+            elif use_web:
+                log.warning("웹 검색 실패: %s", web)
+                web_stats = {"error": str(web)}
+                system_parts.append(WEB_EMPTY_INSTRUCTION.strip())
 
             yield _sse("meta", {
                 "model": model,
                 "rag": bool(use_rag),
                 "rag_mode": mode if use_rag else None,
                 "rag_stats": rag_stats,
+                "web": bool(use_web),
+                "web_stats": web_stats,
                 "attachments": attach_meta,
                 "persona": (persona or {}).get("name"),
                 "title": new_title,

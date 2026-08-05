@@ -231,6 +231,9 @@ export default function Chat() {
             if (data.rag && data.rag_stats && !data.rag_stats.chunks) {
               toast('RAG: 관련 자료를 찾지 못했습니다')
             }
+            if (data.web && !data.web_stats?.results) {
+              toast('웹·논문 검색 결과가 없습니다', true)
+            }
           } else if (event === 'citation') {
             citations.push(data)
             patchLast((m) => ({ ...m, citations: [...citations] }))
@@ -293,6 +296,7 @@ export default function Chat() {
                 <div className="mute2 truncate">
                   {s.persona_name || '기본'}
                   {s.rag_enabled && ' · RAG'}
+                  {s.web_enabled && ' · 웹'}
                 </div>
               </div>
               <button
@@ -319,6 +323,10 @@ export default function Chat() {
 
               <Toggle checked={session.rag_enabled} onChange={(v) => patchSession({ rag_enabled: v })}>
                 RAG
+              </Toggle>
+
+              <Toggle checked={session.web_enabled} onChange={(v) => patchSession({ web_enabled: v })}>
+                웹·논문
               </Toggle>
 
               {session.rag_enabled && (
@@ -453,6 +461,8 @@ export default function Chat() {
                       : '일반 대화'}
                   </span>
 
+                  {session.web_enabled && <span className="badge on">웹·논문 검색</span>}
+
                   <span className="hint mute2">Shift+Enter 줄바꿈</span>
 
                   {busy ? (
@@ -484,13 +494,35 @@ export default function Chat() {
 
       {cite && (
         <Modal title={`출처 ${cite.tag}`} onClose={() => setCite(null)}>
-          <div className="mono mute2" style={{ marginBottom: 10 }}>{cite.path}</div>
-          <div style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{cite.excerpt}</div>
-          <div className="mute2" style={{ marginTop: 10 }}>유사도 {cite.score}</div>
+          {cite.url ? (
+            <>
+              <div style={{ marginBottom: 6, fontWeight: 600 }}>{cite.title}</div>
+              {cite.meta && <div className="mute2" style={{ marginBottom: 6 }}>{cite.meta}</div>}
+              <a href={cite.url} target="_blank" rel="noreferrer noopener" className="mono">
+                {cite.url}
+              </a>
+              <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, marginTop: 10 }}>
+                {cite.excerpt}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="mono mute2" style={{ marginBottom: 10 }}>{cite.path}</div>
+              <div style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{cite.excerpt}</div>
+              <div className="mute2" style={{ marginTop: 10 }}>유사도 {cite.score}</div>
+            </>
+          )}
         </Modal>
       )}
     </div>
   )
+}
+
+/** 칩에 보일 짧은 이름. 내 문서는 파일명, 웹·논문은 제목(길면 자른다). */
+function citeLabel(c: Citation) {
+  if (!c.url) return c.path.split('/').pop()
+  const t = c.title || c.path
+  return t.length > 44 ? `${t.slice(0, 44)}…` : t
 }
 
 function MessageView({ m, onCite }: { m: Message; onCite: (c: Citation) => void }) {
@@ -542,8 +574,13 @@ function MessageView({ m, onCite }: { m: Message; onCite: (c: Citation) => void 
         {!!m.citations?.length && (
           <div className="cites">
             {m.citations.map((c) => (
-              <span key={c.tag} className="cite" onClick={() => onCite(c)} title={c.path}>
-                [{c.tag}] {c.path.split('/').pop()}
+              <span
+                key={c.tag}
+                className="cite"
+                onClick={() => onCite(c)}
+                title={c.url || c.path}
+              >
+                [{c.tag}] {citeLabel(c)}
               </span>
             ))}
           </div>
@@ -571,6 +608,7 @@ function NewSessionModal({
   const [model, setModel] = useState('')
   const [rag, setRag] = useState(false)
   const [mode, setMode] = useState('hybrid')
+  const [web, setWeb] = useState(false)
 
   return (
     <Modal
@@ -584,6 +622,7 @@ function NewSessionModal({
           model: model || null,
           rag_enabled: rag,
           rag_mode: mode,
+          web_enabled: web,
         })
       }
     >
@@ -616,6 +655,10 @@ function NewSessionModal({
             ))}
           </select>
         )}
+      </div>
+      <div className="row">
+        <Toggle checked={web} onChange={setWeb}>웹·논문 검색</Toggle>
+        <span className="mute2">질문할 때마다 논문 DB 와 웹을 찾아 근거로 씁니다</span>
       </div>
     </Modal>
   )

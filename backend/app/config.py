@@ -73,6 +73,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "rag_ocr_enabled": True,  # 이미지 / 텍스트 없는 PDF 를 OCR 로 읽는다
     "rag_ocr_langs": "kor+eng",  # tesseract 언어 코드
     "rag_ocr_min_chars": 80,  # PDF 에서 이 이하로 추출되면 스캔본으로 보고 OCR
+    # 외부 검색 (논문 + 일반 웹). 채팅에서 토글로 켠다. 키가 필요 없는 공개 API 만 쓴다.
+    "web_search_default_enabled": False,
+    "web_search_mode": "auto",  # auto(논문+웹) | scholar(논문만) | web(웹만)
+    "web_top_k": 5,
+    "web_fetch_pages": 2,  # 웹 결과 상위 N 건은 본문까지 받아 온다 (0=스니펫만)
+    # 한글 질문을 논문 DB 용 영어 키워드로 바꾼다 (추출 모델 사용)
+    "web_query_rewrite": True,
+    # OpenAlex 에 보낼 연락처. 넣으면 polite pool 로 들어가 속도 제한을 덜 맞는다
+    "web_contact_email": "",
     # NAS
     "nas_use_trash": True,
     "nas_show_hidden_default": False,
@@ -101,6 +110,7 @@ ADMIN_SETTINGS = frozenset({
 })
 
 RAG_MODES = ("naive", "local", "global", "hybrid")
+WEB_MODES = ("auto", "scholar", "web")
 EXTRACT_PROVIDERS = ("local", "deepseek")
 
 TEXT_EXTS = {".txt", ".md", ".markdown", ".rst", ".csv", ".log", ".json",

@@ -261,6 +261,8 @@ export default function Settings() {
             </Field>
           </div>
 
+          <WebSearchCard val={val} set={set} />
+
           <div className="card">
             <h3>감시 폴더 <span className="mute2">여기 넣은 문서가 자동 색인됩니다</span></h3>
             <ListEditor
@@ -986,6 +988,56 @@ function UsersTab() {
         {users !== null && !users.length && <div className="empty">계정이 없습니다</div>}
       </div>
     </>
+  )
+}
+
+function WebSearchCard({ val, set }: { val: (k: string) => any; set: (k: string, v: any) => void }) {
+  return (
+    <div className="card">
+      <h3>
+        웹 · 논문 검색
+        <span className="mute2">채팅에서 토글로 켜면 바깥을 찾아 근거로 씁니다</span>
+      </h3>
+
+      <Toggle
+        checked={!!val('web_search_default_enabled')}
+        onChange={(v) => set('web_search_default_enabled', v)}
+      >
+        새 대화에서 기본 켜기
+      </Toggle>
+
+      <div className="grid2" style={{ marginTop: 12 }}>
+        <Field label="검색 범위">
+          <select value={val('web_search_mode') ?? 'auto'} onChange={(e) => set('web_search_mode', e.target.value)}>
+            <option value="auto">논문 + 웹 (권장)</option>
+            <option value="scholar">논문만 (OpenAlex · Crossref · arXiv)</option>
+            <option value="web">웹만 (DuckDuckGo)</option>
+          </select>
+        </Field>
+        <Field label="결과 개수" hint="많을수록 프롬프트가 길어집니다">
+          <input type="number" value={val('web_top_k')} onChange={(e) => set('web_top_k', Number(e.target.value))} />
+        </Field>
+        <Field label="본문까지 받을 웹 결과 수" hint="0 이면 요약문만 사용">
+          <input type="number" value={val('web_fetch_pages')} onChange={(e) => set('web_fetch_pages', Number(e.target.value))} />
+        </Field>
+        <Field label="OpenAlex 연락 이메일" hint="넣으면 속도 제한(429)을 훨씬 덜 맞습니다">
+          <input
+            value={val('web_contact_email') ?? ''}
+            placeholder="you@example.com"
+            onChange={(e) => set('web_contact_email', e.target.value)}
+          />
+        </Field>
+      </div>
+
+      <Toggle checked={!!val('web_query_rewrite')} onChange={(v) => set('web_query_rewrite', v)}>
+        한글 질문을 영어 검색어로 바꿔서 논문 검색
+      </Toggle>
+
+      <div className="mute2" style={{ marginTop: 8 }}>
+        논문 DB 는 영어만 제대로 찾습니다. 켜두면 추출 모델이 질문에서 주제어만 뽑아
+        영어로 바꿔 검색합니다(일반 웹은 원문 그대로 검색). API 키는 필요 없습니다.
+      </div>
+    </div>
   )
 }
 

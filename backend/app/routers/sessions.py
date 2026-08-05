@@ -11,7 +11,8 @@ from .personas import default_persona
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"], dependencies=[deps.Auth])
 
-_COLS = "id, title, persona_id, model, rag_enabled, rag_mode, created_at, updated_at"
+_COLS = ("id, title, persona_id, model, rag_enabled, rag_mode, web_enabled, "
+         "created_at, updated_at")
 
 
 class SessionIn(BaseModel):
@@ -20,6 +21,7 @@ class SessionIn(BaseModel):
     model: str | None = None
     rag_enabled: bool | None = None
     rag_mode: str | None = None
+    web_enabled: bool | None = None
 
 
 class SessionPatch(BaseModel):
@@ -28,6 +30,7 @@ class SessionPatch(BaseModel):
     model: str | None = None
     rag_enabled: bool | None = None
     rag_mode: str | None = None
+    web_enabled: bool | None = None
 
 
 def load_session(session_id: int) -> dict:
@@ -67,14 +70,16 @@ def create(body: SessionIn, cfg: deps.Settings) -> dict:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"rag_mode 는 {RAG_MODES} 중 하나")
 
     enabled = cfg["rag_default_enabled"] if body.rag_enabled is None else body.rag_enabled
+    web = cfg["web_search_default_enabled"] if body.web_enabled is None else body.web_enabled
 
     with db.cursor() as cur:
         cur.execute(
             f"""
-            INSERT INTO chat_sessions (title, persona_id, model, rag_enabled, rag_mode)
-            VALUES (%s, %s, %s, %s, %s) RETURNING {_COLS}
+            INSERT INTO chat_sessions
+                   (title, persona_id, model, rag_enabled, rag_mode, web_enabled)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING {_COLS}
             """,
-            (body.title or "새 대화", persona_id, body.model, enabled, mode),
+            (body.title or "새 대화", persona_id, body.model, enabled, mode, web),
         )
         return {"session": cur.fetchone()}
 
