@@ -325,13 +325,16 @@ MAX_NOTION_DOCS = 500  # 크롤이 폭주하지 않게 두는 전체 상한
 
 
 def index_notion(page_id: str, cfg: dict, *, depth: int = 0, max_depth: int = 3,
-                 client: httpx.Client | None = None) -> str:
-    """Notion 페이지 하나를 색인하고 하위 페이지를 큐에 넣는다."""
+                 host: str | None = None, client: httpx.Client | None = None) -> str:
+    """Notion 페이지 하나를 색인하고 하위 페이지를 큐에 넣는다.
+
+    host 가 있으면 게시된(공개) 페이지라 토큰 없이 읽는다.
+    """
     owned = client is None
     client = client or httpx.Client(timeout=600)
     api = httpx.Client(timeout=60)
     try:
-        page = notion.fetch(page_id, api)
+        page = notion.fetch_public(host, page_id, api) if host else notion.fetch(page_id, api)
         path = f"notion/{page['title']}"
 
         with db.cursor() as cur:
@@ -368,7 +371,8 @@ def index_notion(page_id: str, cfg: dict, *, depth: int = 0, max_depth: int = 3,
             if total < MAX_NOTION_DOCS:
                 for child in page["children"]:
                     jobs.enqueue(jobs.INDEX_NOTION,
-                                 {"path": child, "depth": depth + 1, "max_depth": max_depth})
+                                 {"path": child, "depth": depth + 1,
+                                  "max_depth": max_depth, "host": host})
             else:
                 log.warning("Notion 문서 상한(%d)에 도달해 하위 페이지를 더 넣지 않습니다", MAX_NOTION_DOCS)
 

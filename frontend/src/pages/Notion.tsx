@@ -115,20 +115,7 @@ function Pages() {
 
   return (
     <>
-      {!st?.configured && (
-        <div className="card">
-          <h3>연결 필요</h3>
-          <div className="mute2">
-            설정 → 연결 에서 Notion 통합 토큰을 먼저 입력하세요.
-          </div>
-          <a className="badge on" href="/settings" style={{ marginTop: 12, display: 'inline-flex' }}>
-            설정으로 이동
-          </a>
-        </div>
-      )}
-
-      {st?.configured && (
-        <div className="card">
+      <div className="card">
           <h3>페이지 크롤<span className="mute2">하위 페이지를 따라가며 읽습니다</span></h3>
           <div className="row wrap">
             <input
@@ -149,11 +136,12 @@ function Pages() {
             </button>
           </div>
           <div className="mute2" style={{ marginTop: 8 }}>
-            Notion 에서 <b>해당 페이지를 통합(integration)에 연결</b>해야 읽을 수 있습니다.
-            페이지 우측 상단 ··· → 연결 → 만든 통합 선택.
+            <b>인터넷에 게시된 페이지</b>(<code>*.notion.site</code>)는 토큰 없이 바로 읽습니다.
+            비공개 페이지는 통합 토큰이 필요하고(설정 → 연결), 그 페이지에서
+            ··· → 연결 로 통합을 추가해야 합니다.
+            {!st?.configured && ' 지금은 토큰이 없어 게시된 페이지만 가능합니다.'}
           </div>
-        </div>
-      )}
+      </div>
 
       <div className="row wrap" style={{ marginBottom: 12 }}>
         <span className="live">

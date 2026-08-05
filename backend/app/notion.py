@@ -236,3 +236,89 @@ def ping() -> dict[str, Any]:
         }
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+# ─────────────────────── 공개(게시) 페이지 ───────────────────────
+# ponytail: notion.site 의 비공개 api/v3 를 쓴다. 공식 스펙이 아니라 언제든 깨질 수 있다.
+# 깨지면 통합(공식 API) 경로로 안내하는 게 상한이자 대체 경로다.
+
+PUBLIC_HOST = re.compile(r"https?://([a-z0-9-]+\.notion\.site)", re.I)
+
+
+def public_host(url: str) -> str | None:
+    """게시된 페이지면 그 호스트를 돌려준다. 아니면 None."""
+    m = PUBLIC_HOST.search(url or "")
+    return m.group(1) if m else None
+
+
+def _title_of(block: dict) -> str:
+    props = (block.get("properties") or {}).get("title") or []
+    return "".join(part[0] for part in props if part and isinstance(part[0], str))
+
+
+_PUBLIC_SKIP = {"page", "collection_view_page", "alias"}
+
+
+def fetch_public(host: str, page_id: str, client: httpx.Client,
+                 max_blocks: int = 2000) -> dict[str, Any]:
+    """게시된 페이지를 토큰 없이 읽는다."""
+    blocks: dict[str, dict] = {}
+    cursor: dict[str, Any] = {"stack": []}
+    for chunk in range(12):  # 아주 긴 페이지도 12청크면 충분하다
+        r = client.post(
+            f"https://{host}/api/v3/loadPageChunk",
+            json={"pageId": page_id, "limit": 200, "chunkNumber": chunk,
+                  "cursor": cursor, "verticalColumns": False},
+            timeout=30,
+        )
+        time.sleep(RATE_SLEEP)
+        if r.status_code >= 400:
+            raise NotionError(
+                f"게시된 페이지를 읽지 못했습니다 (HTTP {r.status_code}). "
+                "'인터넷에 게시'가 켜져 있는지 확인하세요"
+            )
+        data = r.json()
+        for bid, rec in ((data.get("recordMap") or {}).get("block") or {}).items():
+            if rec.get("value"):
+                blocks[bid] = rec["value"]
+        cursor = data.get("cursor") or {"stack": []}
+        if not cursor.get("stack"):
+            break
+
+    root = blocks.get(page_id)
+    if not root:
+        raise NotionError("게시된 페이지에서 내용을 찾지 못했습니다")
+
+    title = _title_of(root) or "제목 없음"
+    lines = [f"# {title}"]
+    children: list[str] = []
+    seen = 0
+
+    def walk(bid: str, depth: int) -> None:
+        nonlocal seen
+        for cid in blocks.get(bid, {}).get("content") or []:
+            if seen >= max_blocks:
+                return
+            seen += 1
+            b = blocks.get(cid)
+            if not b:
+                continue
+            kind = b.get("type") or ""
+            if kind in _PUBLIC_SKIP:
+                children.append(cid)
+                lines.append(f"- (하위 페이지) {_title_of(b)}")
+                continue
+            text = _title_of(b)
+            if kind in ("header", "sub_header", "sub_sub_header"):
+                lines.append("#" * (1 + list(("header", "sub_header", "sub_sub_header")).index(kind)) + " " + text)
+            elif kind in ("bulleted_list", "numbered_list", "to_do"):
+                lines.append("- " + text)
+            elif text:
+                lines.append(text)
+            if depth < 6:
+                walk(cid, depth + 1)
+
+    walk(page_id, 0)
+    return {"id": page_id, "title": title,
+            "url": f"https://{host}/{page_id.replace('-', '')}",
+            "text": "\n".join(l for l in lines if l.strip()), "children": children}

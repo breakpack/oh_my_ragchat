@@ -64,15 +64,21 @@ def test() -> dict:
 
 @router.post("/crawl")
 def crawl(body: CrawlIn) -> dict:
-    if not notion.configured():
-        raise HTTPException(400, detail="Notion 토큰을 먼저 입력하세요")
+    host = notion.public_host(body.url)  # 게시된 페이지면 토큰이 필요 없다
+    if not host and not notion.configured():
+        raise HTTPException(
+            400,
+            detail="비공개 페이지는 통합 토큰이 필요합니다. 설정 → 연결 에서 입력하거나, "
+                   "'인터넷에 게시'된 notion.site 링크를 넣으세요",
+        )
     try:
         page_id = notion.parse_id(body.url)
     except notion.NotionError as exc:
         raise HTTPException(400, detail=str(exc)) from None
 
-    jobs.enqueue(jobs.INDEX_NOTION, {"path": page_id, "depth": 0, "max_depth": body.max_depth})
-    return {"ok": True, "page_id": page_id}
+    jobs.enqueue(jobs.INDEX_NOTION,
+                 {"path": page_id, "depth": 0, "max_depth": body.max_depth, "host": host})
+    return {"ok": True, "page_id": page_id, "mode": "public" if host else "integration"}
 
 
 @router.get("/pages")
