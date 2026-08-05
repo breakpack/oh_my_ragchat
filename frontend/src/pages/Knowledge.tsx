@@ -481,9 +481,9 @@ function GraphView() {
               {top.map((n) => (
                 <tr
                   key={n.id}
+                  className={n.id === active?.id ? 'sel' : ''}
                   style={{ cursor: 'pointer' }}
-                  onMouseEnter={() => setActive(n)}
-                  onClick={() => open(n)}
+                  onClick={() => setActive(n)}
                 >
                   <td className="truncate" style={{ maxWidth: 200 }}>{n.name}</td>
                   <td className="mute2">{n.degree}</td>

@@ -757,6 +757,7 @@ a.badge:hover { text-decoration: none; border-color: var(--primary); color: var(
 .graph-side .card { margin-bottom: 0; }
 .graph-side .grow-scroll { flex: 1; overflow: auto; min-height: 0; }
 .graph-side h3 { margin-bottom: var(--sp-md); }
+.graph-side tbody tr.sel { background: var(--blue-tint); }
 
 .graph-canvas {
   flex: 1;
