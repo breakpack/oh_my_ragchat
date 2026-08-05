@@ -43,17 +43,17 @@ const radiusOf = (degree: number) => 4 + Math.min(Math.sqrt(degree || 0) * 2.2, 
 export default function GraphCanvas({
   nodes,
   edges,
-  height = 520,
   focusId,
   showLabels = true,
   onOpen,
+  onHover,
 }: {
   nodes: GNode[]
   edges: GEdge[]
-  height?: number
   focusId?: number | null
   showLabels?: boolean
   onOpen?: (node: GNode) => void
+  onHover?: (node: GNode | null) => void
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const bodies = useRef(new Map<number, Body>())
@@ -63,7 +63,7 @@ export default function GraphCanvas({
   const drag = useRef<{ id?: number; sx: number; sy: number; ox: number; oy: number } | null>(null)
   const [hover, setHover] = useState<number | null>(null)
   const hoverRef = useRef<number | null>(null)
-  const [size, setSize] = useState({ w: 800, h: height })
+  const [size, setSize] = useState({ w: 800, h: 520 })
 
   // 이웃 색인 — 하이라이트할 때 쓴다
   const neighbors = useMemo(() => {
@@ -76,8 +76,6 @@ export default function GraphCanvas({
     }
     return m
   }, [edges])
-
-  const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes])
 
   // 연결이 많은 순서 — 라벨을 보여줄 우선순위로 쓴다
   const ranked = useMemo(
@@ -141,12 +139,12 @@ export default function GraphCanvas({
     const el = canvasRef.current?.parentElement
     if (!el) return
     const ro = new ResizeObserver(() => {
-      setSize({ w: el.clientWidth, h: height })
+      setSize({ w: el.clientWidth, h: el.clientHeight })
     })
     ro.observe(el)
-    setSize({ w: el.clientWidth, h: height })
+    setSize({ w: el.clientWidth, h: el.clientHeight })
     return () => ro.disconnect()
-  }, [height])
+  }, [])
 
   /* ── 시뮬레이션 한 스텝 ── */
   const step = useCallback(() => {
@@ -368,10 +366,10 @@ export default function GraphCanvas({
   }
 
   return (
-    <div className="graph-canvas" style={{ height }}>
+    <div className="graph-canvas">
       <canvas
         ref={canvasRef}
-        style={{ width: '100%', height, display: 'block', cursor: hover ? 'pointer' : 'grab' }}
+        style={{ width: '100%', height: '100%', display: 'block', cursor: hover ? 'pointer' : 'grab' }}
         onPointerDown={(e) => {
           const { cx, cy } = localPos(e)
           const node = hit(cx, cy)
@@ -406,6 +404,7 @@ export default function GraphCanvas({
           if (id !== hoverRef.current) {
             hoverRef.current = id
             setHover(id)
+            onHover?.(node ?? null)
           }
         }}
         onPointerUp={() => {
@@ -420,6 +419,7 @@ export default function GraphCanvas({
           drag.current = null
           hoverRef.current = null
           setHover(null)
+          onHover?.(null)
         }}
         onDoubleClick={(e) => {
           const { cx, cy } = localPos(e)
@@ -438,17 +438,6 @@ export default function GraphCanvas({
           v.k = k
         }}
       />
-
-      {hover != null && byId.get(hover) && (
-        <div className="graph-tip">
-          <strong>{byId.get(hover)!.name}</strong>
-          <span className="badge">{byId.get(hover)!.type}</span>
-          <span className="mute2">연결 {byId.get(hover)!.degree}</span>
-          {byId.get(hover)!.description && (
-            <div className="mute2 desc">{byId.get(hover)!.description}</div>
-          )}
-        </div>
-      )}
 
       <div className="graph-actions">
         <button

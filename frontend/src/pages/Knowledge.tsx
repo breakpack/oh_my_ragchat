@@ -338,15 +338,15 @@ function GraphView() {
   const [labels, setLabels] = useState(true)
   const [data, setData] = useState<{ nodes: GNode[]; edges: GEdge[]; seed: string | null } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [active, setActive] = useState<GNode | null>(null)
 
   const load = useCallback(
     async (name?: string, opts?: { limit?: number; depth?: number }) => {
       setBusy(true)
-      const l = opts?.limit ?? limit
-      const d = opts?.depth ?? depth
       const r = await run(() =>
         api.get<any>(
-          `/api/rag/graph?depth=${d}&limit=${l}${name ? `&entity=${encodeURIComponent(name)}` : ''}`,
+          `/api/rag/graph?depth=${opts?.depth ?? depth}&limit=${opts?.limit ?? limit}` +
+            (name ? `&entity=${encodeURIComponent(name)}` : ''),
         ),
       )
       setBusy(false)
@@ -362,93 +362,107 @@ function GraphView() {
 
   const nodes = data?.nodes ?? []
   const edges = data?.edges ?? []
-  const focusId = useMemo(() => {
-    if (!entity) return null
-    const hit = nodes.find((n) => n.name === entity)
-    return hit?.id ?? null
-  }, [entity, nodes])
+  const focusId = useMemo(
+    () => (entity ? (nodes.find((n) => n.name === entity)?.id ?? null) : null),
+    [entity, nodes],
+  )
+  const top = useMemo(
+    () => [...nodes].sort((a, b) => (b.degree || 0) - (a.degree || 0)),
+    [nodes],
+  )
+
+  const open = (n: GNode) => {
+    setEntity(n.name)
+    load(n.name)
+  }
 
   return (
-    <>
-      <div className="card">
-        <div className="row wrap">
+    <div className="graph-tab">
+      <div className="board">
+        <div className="row wrap" style={{ marginBottom: 12 }}>
           <input
             className="grow"
-            style={{ minWidth: 220 }}
+            style={{ minWidth: 180 }}
             placeholder="엔티티 이름 (비우면 연결이 많은 노드부터)"
             value={entity}
             onChange={(e) => setEntity(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && load(entity)}
           />
-          <select style={{ width: 120 }} value={depth} onChange={(e) => { const v = Number(e.target.value); setDepth(v); load(entity || undefined, { depth: v }) }}>
+          <select style={{ width: 90 }} value={depth} onChange={(e) => { const v = Number(e.target.value); setDepth(v); load(entity || undefined, { depth: v }) }}>
             <option value={1}>1홉</option>
             <option value={2}>2홉</option>
           </select>
-          <select style={{ width: 130 }} value={limit} onChange={(e) => { const v = Number(e.target.value); setLimit(v); load(entity || undefined, { limit: v }) }}>
-            {[60, 150, 300, 600].map((v) => (
-              <option key={v} value={v}>{v}개</option>
-            ))}
+          <select style={{ width: 100 }} value={limit} onChange={(e) => { const v = Number(e.target.value); setLimit(v); load(entity || undefined, { limit: v }) }}>
+            {[60, 150, 300, 600].map((v) => <option key={v} value={v}>{v}개</option>)}
           </select>
           <Toggle checked={labels} onChange={setLabels}>라벨</Toggle>
           <button className="primary" onClick={() => load(entity)} disabled={busy}>
-            {busy ? '불러오는 중…' : '보기'}
+            {busy ? '…' : '보기'}
           </button>
         </div>
-        <div className="mute2" style={{ marginTop: 8 }}>
-          휠로 확대·축소, 빈 곳을 끌어 이동, 노드를 끌어 배치, 더블클릭하면 그 노드를 중심으로 다시 봅니다.
-        </div>
+
+        {nodes.length ? (
+          <GraphCanvas
+            nodes={nodes}
+            edges={edges}
+            focusId={focusId}
+            showLabels={labels}
+            onOpen={open}
+            onHover={(n) => n && setActive(n)}
+          />
+        ) : (
+          <div className="graph-canvas empty">
+            {busy ? '불러오는 중…' : '그래프가 비어 있습니다. 문서를 색인하면 엔티티가 생깁니다.'}
+          </div>
+        )}
       </div>
 
-      {!nodes.length ? (
-        <div className="empty">
-          {busy ? '불러오는 중…' : '그래프가 비어 있습니다. 문서를 색인하면 엔티티가 생깁니다.'}
-        </div>
-      ) : (
-        <>
-          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-            <GraphCanvas
-              nodes={nodes}
-              edges={edges}
-              height={560}
-              focusId={focusId}
-              showLabels={labels}
-              onOpen={(n) => {
-                setEntity(n.name)
-                load(n.name)
-              }}
-            />
+      <aside className="graph-side">
+        {active ? (
+          <div className="card">
+            <h3>{active.name}</h3>
+            <div className="row wrap" style={{ marginBottom: 8 }}>
+              <span className="badge">{active.type}</span>
+              <span className="mute2">연결 {active.degree}</span>
+            </div>
+            <div className="mute2" style={{ whiteSpace: 'pre-wrap' }}>
+              {active.description || '설명이 없습니다.'}
+            </div>
+            <button className="sm" style={{ marginTop: 12 }} onClick={() => open(active)}>
+              이 노드를 중심으로 보기
+            </button>
           </div>
+        ) : (
+          <div className="card mute2">노드에 마우스를 올리면 설명이 여기에 표시됩니다.</div>
+        )}
 
-          <div className="row wrap mute2" style={{ margin: '0 0 12px' }}>
-            <span>노드 {nodes.length}개 · 관계 {edges.length}개</span>
-            {data?.seed && <span className="badge on">중심: {data.seed}</span>}
-          </div>
-
-          <div className="card flush">
-            <table>
-              <thead>
-                <tr>
-                  <th style={{ width: 200 }}>엔티티</th>
-                  <th style={{ width: 80 }}>유형</th>
-                  <th style={{ width: 60 }}>연결</th>
-                  <th>설명</th>
+        <div className="card flush grow-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>엔티티</th>
+                <th style={{ width: 64, whiteSpace: 'nowrap' }}>연결</th>
+              </tr>
+            </thead>
+            <tbody>
+              {top.map((n) => (
+                <tr
+                  key={n.id}
+                  style={{ cursor: 'pointer' }}
+                  onMouseEnter={() => setActive(n)}
+                  onClick={() => open(n)}
+                >
+                  <td className="truncate" style={{ maxWidth: 200 }}>{n.name}</td>
+                  <td className="mute2">{n.degree}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {[...nodes].sort((a, b) => (b.degree || 0) - (a.degree || 0)).slice(0, 30).map((n) => (
-                  <tr key={n.id} style={{ cursor: 'pointer' }} onClick={() => { setEntity(n.name); load(n.name) }}>
-                    <td>{n.name}</td>
-                    <td className="mute2">{n.type}</td>
-                    <td className="mute2">{n.degree}</td>
-                    <td className="mute2 truncate" style={{ maxWidth: 420 }}>{n.description}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-    </>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mute2">노드 {nodes.length}개 · 관계 {edges.length}개</div>
+      </aside>
+    </div>
   )
 }
 
