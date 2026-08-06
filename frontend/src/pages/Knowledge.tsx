@@ -309,8 +309,27 @@ function ObsidianExport({ onClose }: { onClose: () => void }) {
     onClose()
   }
 
+  const load = async () => {
+    if (!confirm('볼트에서 고친 설명·관계를 서비스로 가져옵니다. 추가·수정만 하고 삭제는 하지 않습니다. 계속할까요?')) return
+    setBusy(true)
+    const r = await run(() =>
+      api.post<{ location: string; path: string; notes: number; entities_created: number; entities_updated: number; relations_added: number; relations_updated: number; warning: string }>(
+        '/api/rag/import/obsidian',
+        { dest, external },
+      ),
+    )
+    setBusy(false)
+    if (!r) return
+    toast(
+      `노트 ${r.notes}개 중 엔티티 ${r.entities_updated}개 수정 · ${r.entities_created}개 추가, ` +
+      `관계 ${r.relations_added}개 추가 · ${r.relations_updated}개 수정`,
+    )
+    if (r.warning) toast(r.warning, true)
+    onClose()
+  }
+
   return (
-    <Modal title="옵시디언으로 내보내기" onClose={onClose} onSubmit={submit} submitLabel="내보내기" busy={busy}>
+    <Modal title="옵시디언 연동" onClose={onClose} onSubmit={submit} submitLabel="내보내기" busy={busy}>
       <Field
         label="저장할 곳"
         hint={external ? 'OBSIDIAN_HOST_PATH 로 지정한 폴더' : 'NAS 안 (파일 탭에서 보입니다)'}
@@ -332,12 +351,23 @@ function ObsidianExport({ onClose }: { onClose: () => void }) {
         <input value={dest} autoFocus onChange={(e) => setDest(e.target.value)} />
       </Field>
       <Toggle checked={withDocs} onChange={setWithDocs}>문서 노트도 만들기 (엔티티 ↔ 문서 연결)</Toggle>
+
+      <div className="row" style={{ margin: '12px 0 4px' }}>
+        <button type="button" disabled={busy} onClick={load}>← 볼트에서 가져오기</button>
+        <span className="mute2">
+          옵시디언에서 고친 설명·관계를 서비스로 되돌립니다 (추가·수정만)
+        </span>
+      </div>
       <p className="mute2">
         엔티티마다 노트를 하나씩 만들고 관계를 <code>[[위키링크]]</code> 로 적습니다.
         옵시디언 그래프 뷰가 그 링크를 간선으로 그리므로 여기서 보던 그래프가 그대로 열립니다.
         같은 위치로 다시 내보내면 <code>엔티티/</code>·<code>문서/</code> 폴더를 갈아끼웁니다
         (다른 파일이 있는 폴더는 거부합니다). 외부 폴더를 iCloud Drive 의 옵시디언 폴더로
         지정해 두면 아이폰·아이패드에서도 같은 볼트가 열립니다.
+        <br />
+        옵시디언에서 고친 내용은 <b>가져오기</b>로 먼저 서비스에 반영하세요. 그러면 다음
+        내보내기 때 그대로 다시 나갑니다. 볼트가 오래됐다면 그 사이 정리된 엔티티가
+        되살아날 수 있으니, 내보내기 → 편집 → 가져오기 순서로 쓰는 게 안전합니다.
       </p>
     </Modal>
   )

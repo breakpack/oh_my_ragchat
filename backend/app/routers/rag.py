@@ -170,6 +170,17 @@ async def export_obsidian(body: ObsidianIn, cfg: deps.Settings) -> dict:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
+@router.post("/import/obsidian")
+async def import_obsidian(body: ObsidianIn, cfg: deps.Settings) -> dict:
+    """볼트에서 고친 설명·관계를 DB 로 되돌린다 (추가·수정만, 삭제는 하지 않는다)."""
+    try:
+        return await anyio.to_thread.run_sync(
+            obsidian.import_vault, body.dest, cfg, body.external
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
 @router.delete("/documents/{doc_id}")
 def delete_document(doc_id: int) -> dict:
     with db.cursor() as cur:

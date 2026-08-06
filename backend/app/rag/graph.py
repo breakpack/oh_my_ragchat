@@ -276,12 +276,16 @@ def refresh_degrees() -> None:
 
 
 def prune_orphans() -> int:
-    """어느 청크와도 연결되지 않은 엔티티를 정리 (문서 삭제 후)."""
+    """어느 청크와도 연결되지 않은 엔티티를 정리 (문서 삭제 후).
+
+    사람이 옵시디언에서 만든 엔티티(manual)는 청크 연결이 없는 게 정상이므로 남긴다.
+    """
     with db.cursor() as cur:
         cur.execute(
             """
             DELETE FROM entities e
-             WHERE NOT EXISTS (SELECT 1 FROM chunk_entities ce WHERE ce.entity_id = e.id)
+             WHERE NOT e.manual
+               AND NOT EXISTS (SELECT 1 FROM chunk_entities ce WHERE ce.entity_id = e.id)
             """
         )
         return cur.rowcount

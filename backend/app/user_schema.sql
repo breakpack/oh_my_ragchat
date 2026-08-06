@@ -113,6 +113,8 @@ CREATE TABLE IF NOT EXISTS {schema}.entities (
     description text NOT NULL DEFAULT '',
     embedding   public.vector(1024),
     degree      int NOT NULL DEFAULT 0,
+    -- 사람이 옵시디언에서 만들거나 고친 것. 청크 연결이 없어도 정리 대상에서 뺀다.
+    manual      boolean NOT NULL DEFAULT false,
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS entities_embedding_idx ON {schema}.entities
