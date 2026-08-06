@@ -16,7 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .. import db, paths
+from .. import ctx, db, paths
+from ..config import env
 
 log = logging.getLogger("chatchat.obsidian")
 
@@ -27,6 +28,17 @@ INDEX = "지식그래프.md"
 
 # 파일 이름에 못 쓰거나 위키링크를 깨뜨리는 글자들
 _BAD = re.compile(r'[\\/:*?"<>|#^\[\]]+')
+
+
+def location_label(external: bool) -> str:
+    """화면에 보여줄 호스트 경로. 컨테이너 안에서는 알 수 없어 라벨을 env 로 받는다."""
+    user = ctx.get()
+    who = user.username if user else "_shared"
+    if not external:
+        return f"NAS/{who} 안"
+    base = (env.obsidian_host_label or str(env.obsidian_root)).rstrip("/")
+    # 관리자는 마운트 바로 아래에 쓴다 (paths.obsidian_root 와 같은 규칙)
+    return base if (user and user.is_admin) else f"{base}/{who}"
 
 
 def _safe(name: str, used: dict[str, str]) -> str:
@@ -104,10 +116,16 @@ def _title(doc: dict, heads: dict[int, str]) -> str:
     return fname
 
 
-def export(dest: str, include_documents: bool, cfg: dict) -> dict[str, Any]:
-    """dest(NAS 상대경로) 아래에 볼트를 만든다. 이미 있으면 우리가 만든 것만 갈아끼운다."""
-    rel = paths.normalize(dest) or "obsidian"
-    target = paths.resolve(rel, must_exist=False)
+def export(dest: str, include_documents: bool, cfg: dict,
+           external: bool = False) -> dict[str, Any]:
+    """볼트를 만든다. 이미 있으면 우리가 만든 폴더만 갈아끼운다.
+
+    external=True 면 NAS 가 아니라 별도 마운트(OBSIDIAN_HOST_PATH — iCloud 등) 아래에
+    쓴다. 볼트를 아이클라우드에 두면 아이폰·아이패드 옵시디언에서도 같은 볼트가 열린다.
+    """
+    base = paths.obsidian_root() if external else paths.root()
+    rel = paths.normalize(dest) or "지식그래프"
+    target = paths.resolve_under(base, rel, must_exist=False)
 
     if target.exists() and not target.is_dir():
         raise ValueError(f"'{rel}' 은(는) 폴더가 아닙니다")
@@ -236,9 +254,10 @@ def export(dest: str, include_documents: bool, cfg: dict) -> dict[str, Any]:
     )
     (target / MARKER).write_text(f"chatchat obsidian export {now}\n", encoding="utf-8")
 
-    # 감시 폴더 안에 내보내면 방금 만든 노트를 다시 색인하게 된다
-    watched = [w for w in (cfg.get("rag_watch_dirs") or [])
-               if rel == w or rel.startswith(f"{w}/")]
+    # 감시 폴더 안에 내보내면 방금 만든 노트를 다시 색인하게 된다 (NAS 안일 때만 해당)
+    watched = [] if external else [
+        w for w in (cfg.get("rag_watch_dirs") or []) if rel == w or rel.startswith(f"{w}/")
+    ]
     warning = (
         f"'{rel}' 은 RAG 감시 폴더({', '.join(watched)}) 안입니다. "
         "내보낸 노트가 다시 색인되니 감시 폴더 밖으로 옮기는 걸 권합니다."
@@ -247,6 +266,8 @@ def export(dest: str, include_documents: bool, cfg: dict) -> dict[str, Any]:
 
     return {
         "path": rel,
+        "external": external,
+        "location": location_label(external),
         "entities": len(data["entities"]),
         "relations": len(data["relations"]),
         "documents": len(data["documents"]) if include_documents else 0,

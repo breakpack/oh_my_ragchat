@@ -21,6 +21,11 @@ class Env(BaseSettings):
     # 저장소 최상위. 이 아래에 사용자별로 <username>/{nas,trash,tmp} 가 생긴다.
     nas_root: Path = Path("/data/nas")
 
+    # 옵시디언 볼트 내보내기 전용 마운트 (iCloud 등 NAS 밖으로 빼고 싶을 때).
+    # 호스트 경로는 컨테이너가 알 수 없어 화면 표시용으로 라벨을 따로 받는다.
+    obsidian_root: Path = Path("/data/obsidian")
+    obsidian_host_label: str = ""
+
     ollama_base_url: str = "http://host.docker.internal:11434"
     chat_model: str = "qwen3.6:27b-mlx"
     extract_model: str = "gemma4:e4b"

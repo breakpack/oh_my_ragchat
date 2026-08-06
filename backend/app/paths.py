@@ -60,9 +60,33 @@ def normalize(rel: str | None) -> str:
     return "/".join(parts)
 
 
+def obsidian_root() -> Path:
+    """옵시디언 볼트를 내보낼 곳. NAS 와 분리된 마운트(iCloud 등)를 쓸 수 있다.
+
+    외부 마운트는 서버 주인의 폴더다. 관리자는 그 폴더에 볼트를 바로 만들고(iOS 옵시디언은
+    iCloud 컨테이너의 **최상위** 폴더만 볼트로 인식한다), 다른 사용자는 자기 하위 폴더에 쓴다.
+    """
+    user = ctx.get()
+    p = env.obsidian_root
+    if not user or not user.is_admin:
+        p = p / (user.username if user else "_shared")
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise PathError(
+            f"외부 내보내기 폴더를 만들 수 없습니다: {exc}. "
+            "OBSIDIAN_HOST_PATH 와 Docker Desktop 의 File sharing 설정을 확인하세요"
+        ) from exc
+    return p.resolve()
+
+
 def resolve(rel: str | None, *, must_exist: bool = True) -> Path:
-    """상대 경로 → 실제 절대 경로. 루트 밖이면 거부."""
-    r = root()
+    """상대 경로 → 실제 절대 경로. NAS 루트 밖이면 거부."""
+    return resolve_under(root(), rel, must_exist=must_exist)
+
+
+def resolve_under(r: Path, rel: str | None, *, must_exist: bool = True) -> Path:
+    """주어진 루트 기준으로 해석하고 그 밖이면 거부한다."""
     target = (r / normalize(rel)) if normalize(rel) else r
 
     probe = target if target.exists() else target.parent
@@ -72,7 +96,7 @@ def resolve(rel: str | None, *, must_exist: bool = True) -> Path:
         raise PathError(f"경로를 해석할 수 없습니다: {exc}") from exc
 
     if real_probe != r and r not in real_probe.parents:
-        raise PathError("NAS 루트 밖의 경로는 접근할 수 없습니다")
+        raise PathError("허용된 루트 밖의 경로는 접근할 수 없습니다")
 
     if must_exist and not target.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="경로를 찾을 수 없습니다")

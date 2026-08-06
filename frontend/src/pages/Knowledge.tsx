@@ -282,28 +282,53 @@ function SearchTest() {
 function ObsidianExport({ onClose }: { onClose: () => void }) {
   const run = useRun()
   const toast = useToast()
-  const [dest, setDest] = useState('obsidian/지식그래프')
+  const [dest, setDest] = useState('지식그래프')
+  const [external, setExternal] = useState(true)
   const [withDocs, setWithDocs] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [targets, setTargets] = useState<{ nas: string; external: string; external_configured: boolean } | null>(null)
+
+  useEffect(() => {
+    api.get<{ nas: string; external: string; external_configured: boolean }>('/api/rag/export/obsidian')
+      .then((t) => { setTargets(t); setExternal(t.external_configured) })
+      .catch(() => setTargets(null))
+  }, [])
 
   const submit = async () => {
     setBusy(true)
     const r = await run(() =>
-      api.post<{ path: string; entities: number; relations: number; documents: number; warning: string }>(
+      api.post<{ path: string; location: string; entities: number; relations: number; documents: number; warning: string }>(
         '/api/rag/export/obsidian',
-        { dest, include_documents: withDocs },
+        { dest, include_documents: withDocs, external },
       ),
     )
     setBusy(false)
     if (!r) return
-    toast(`엔티티 ${r.entities} · 관계 ${r.relations} · 문서 ${r.documents} 를 '${r.path}' 에 내보냈습니다`)
+    toast(`엔티티 ${r.entities} · 관계 ${r.relations} · 문서 ${r.documents} 를 '${r.location}/${r.path}' 에 내보냈습니다`)
     if (r.warning) toast(r.warning, true)
     onClose()
   }
 
   return (
     <Modal title="옵시디언으로 내보내기" onClose={onClose} onSubmit={submit} submitLabel="내보내기" busy={busy}>
-      <Field label="저장 위치" hint="NAS 루트 기준. 이 폴더를 옵시디언에서 볼트로 엽니다">
+      <Field
+        label="저장할 곳"
+        hint={external ? 'OBSIDIAN_HOST_PATH 로 지정한 폴더' : 'NAS 안 (파일 탭에서 보입니다)'}
+      >
+        <select value={external ? 'external' : 'nas'} onChange={(e) => setExternal(e.target.value === 'external')}>
+          <option value="external">외부 폴더 (iCloud 등)</option>
+          <option value="nas">NAS 안</option>
+        </select>
+      </Field>
+      <div className="mute2" style={{ margin: '-6px 0 10px' }}>
+        <code>{(external ? targets?.external : targets?.nas) ?? '…'}/{dest}</code>
+        {external && targets && !targets.external_configured && (
+          <span style={{ color: 'var(--err)' }}>
+            {' '}· OBSIDIAN_HOST_PATH 가 설정되지 않아 프로젝트 폴더로 나갑니다
+          </span>
+        )}
+      </div>
+      <Field label="볼트 이름">
         <input value={dest} autoFocus onChange={(e) => setDest(e.target.value)} />
       </Field>
       <Toggle checked={withDocs} onChange={setWithDocs}>문서 노트도 만들기 (엔티티 ↔ 문서 연결)</Toggle>
@@ -311,7 +336,8 @@ function ObsidianExport({ onClose }: { onClose: () => void }) {
         엔티티마다 노트를 하나씩 만들고 관계를 <code>[[위키링크]]</code> 로 적습니다.
         옵시디언 그래프 뷰가 그 링크를 간선으로 그리므로 여기서 보던 그래프가 그대로 열립니다.
         같은 위치로 다시 내보내면 <code>엔티티/</code>·<code>문서/</code> 폴더를 갈아끼웁니다
-        (다른 파일이 있는 폴더는 거부합니다).
+        (다른 파일이 있는 폴더는 거부합니다). 외부 폴더를 iCloud Drive 의 옵시디언 폴더로
+        지정해 두면 아이폰·아이패드에서도 같은 볼트가 열립니다.
       </p>
     </Modal>
   )

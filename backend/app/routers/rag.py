@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .. import db, deps, events, jobs, paths
-from ..config import RAG_MODES
+from ..config import RAG_MODES, env
 from ..rag import graph as graph_mod
 from ..rag import index as index_mod
 from ..rag import obsidian
@@ -144,16 +144,27 @@ def scan_now(cfg: deps.Settings) -> dict:
 
 
 class ObsidianIn(BaseModel):
-    dest: str = "obsidian/지식그래프"
+    dest: str = "지식그래프"
     include_documents: bool = True
+    external: bool = False  # True 면 OBSIDIAN_HOST_PATH(iCloud 등) 아래에 쓴다
+
+
+@router.get("/export/obsidian")
+def obsidian_targets() -> dict:
+    """내보내기 위치 선택지. 호스트 경로는 컨테이너가 모르므로 라벨을 그대로 보여준다."""
+    return {
+        "nas": obsidian.location_label(False),
+        "external": obsidian.location_label(True),
+        "external_configured": bool(env.obsidian_host_label),
+    }
 
 
 @router.post("/export/obsidian")
 async def export_obsidian(body: ObsidianIn, cfg: deps.Settings) -> dict:
-    """지식 그래프를 옵시디언 볼트(마크다운 + 위키링크)로 NAS 안에 내보낸다."""
+    """지식 그래프를 옵시디언 볼트(마크다운 + 위키링크)로 내보낸다."""
     try:
         return await anyio.to_thread.run_sync(
-            obsidian.export, body.dest, body.include_documents, cfg
+            obsidian.export, body.dest, body.include_documents, cfg, body.external
         )
     except ValueError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
