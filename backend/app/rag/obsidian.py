@@ -125,7 +125,7 @@ def export(dest: str, include_documents: bool, cfg: dict,
     쓴다. 볼트를 아이클라우드에 두면 아이폰·아이패드 옵시디언에서도 같은 볼트가 열린다.
     """
     base = paths.obsidian_root() if external else paths.root()
-    rel = paths.normalize(dest) or "지식그래프"
+    rel = paths.normalize(dest) or "obsidian_chatchat"
     target = paths.resolve_under(base, rel, must_exist=False)
 
     if target.exists() and not target.is_dir():
@@ -366,7 +366,7 @@ def import_vault(dest: str, cfg: dict, external: bool = False) -> dict[str, Any]
     from . import graph as graph_mod  # 순환 임포트 방지
 
     base = paths.obsidian_root() if external else paths.root()
-    rel = paths.normalize(dest) or "지식그래프"
+    rel = paths.normalize(dest) or "obsidian_chatchat"
     target = paths.resolve_under(base, rel, must_exist=True)
     ent_dir = target / ENTITY_DIR
     if not ent_dir.is_dir():

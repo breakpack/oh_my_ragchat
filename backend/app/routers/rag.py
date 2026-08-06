@@ -144,7 +144,7 @@ def scan_now(cfg: deps.Settings) -> dict:
 
 
 class ObsidianIn(BaseModel):
-    dest: str = "지식그래프"
+    dest: str = "obsidian_chatchat"
     include_documents: bool = True
     external: bool = False  # True 면 OBSIDIAN_HOST_PATH(iCloud 등) 아래에 쓴다
 

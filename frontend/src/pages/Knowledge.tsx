@@ -282,7 +282,7 @@ function SearchTest() {
 function ObsidianExport({ onClose }: { onClose: () => void }) {
   const run = useRun()
   const toast = useToast()
-  const [dest, setDest] = useState('지식그래프')
+  const [dest, setDest] = useState('obsidian_chatchat')
   const [external, setExternal] = useState(true)
   const [withDocs, setWithDocs] = useState(true)
   const [busy, setBusy] = useState(false)

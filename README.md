@@ -22,7 +22,7 @@
   외부 모델은 설정에서 키를 넣으면 목록에 자동으로 나타난다(모델 이름은 각 제공자 API 에서 조회)
 - **옵시디언으로 내보내기** — 지식 그래프를 마크다운 + `[[위키링크]]` 볼트로 뽑는다.
   그 폴더를 옵시디언에서 열면 그래프 뷰에 그대로 나온다 (플러그인 불필요).
-  NAS 안이 아니라 **iCloud Drive 의 옵시디언 폴더**로 바로 내보낼 수 있어 아이폰·아이패드에서도 열린다.
+  NAS 안이 아니라 **iCloud Drive** 로 바로 내보낼 수 있다(`OBSIDIAN_HOST_PATH`).
   옵시디언에서 고친 설명·관계는 **가져오기**로 되돌리면 다음 내보내기에도 그대로 유지된다
 - **웹 · 논문 검색** — 채팅에서 토글 하나로 켠다. 논문은 OpenAlex·Crossref·arXiv,
   일반 웹은 DuckDuckGo 를 찾아 `[W1]` 출처를 달아 답한다. **API 키가 필요 없고**,
@@ -70,7 +70,7 @@ make clean     # 볼륨까지 삭제 (DB 초기화, NAS 파일은 유지)
 그러면 지식베이스 → 그래프 → **옵시디언** 에서 "외부 폴더"를 고를 수 있다.
 
 ```bash
-OBSIDIAN_HOST_PATH=/Users/<나>/Library/Mobile Documents/iCloud~md~obsidian/Documents
+OBSIDIAN_HOST_PATH=/Users/<나>/Library/Mobile Documents/com~apple~CloudDocs
 ```
 
 ## 구성
